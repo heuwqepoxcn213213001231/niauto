@@ -8,10 +8,8 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         G.MM2KaitunV2 = nil
     end
     
-    --══════════════════════════════════ CONFIG ═════════════════════════════════
     
     local DEFAULT_CONFIG = {
-        ----------------------------------------------------------------- farm --
         Enabled = true,
         AutoStart = true,           
         CoinType = "Any",         
@@ -87,26 +85,25 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         AutoCreatePad = true,      
         PadSize = 128,
         FixFallenPartsHeight = true,
-        CleanupWaitTimeout = 8,    -- giây retry cleanup khi Lobby/map replicate muộn
+        CleanupWaitTimeout = 8,
 
-        ---------------------------------------------------------------- summer --
         EnableSummer2026 = true,
-        Summer2026Interval = 15,       -- giây giữa mỗi lần check claim/box
-        MinShellsForBox = 0,           -- 0 = auto từ NewShop (SummerKey2026 price)
+        Summer2026Interval = 15,
+        MinShellsForBox = 0,
         Summer2026EventTitle = "Summer2026",
         Summer2026KeyCurrency = "SummerKey2026",
         Summer2026BoxId = "Summer2026Box",
         Summer2026ClaimBattlePass = true,
         Summer2026AutoUnbox = true,
-        AccountOpsAutoswapMaxShells = 120, -- chỉ autoswap khi shells < ngưỡng này
+        AccountOpsAutoswapMaxShells = 120,
         AccountOpsBaseUrl = "https://accountops.org",
         AccountOpsApiKey = "",         
-        AccountOpsAutoswapDelaySeconds = 60,   -- giây chờ sau khi đủ điều kiện trước lần gửi đầu
+        AccountOpsAutoswapDelaySeconds = 60,
         AccountOpsAutoswapOnDailyComplete = true,
-        AccountOpsAutoswapOption = 2,      -- rule number on AccountOps UI (no-godly / default)
-        AccountOpsAutoswapGodlyOption = 3, -- rule number when account holds a Godly item (priority)
-        AccountOpsAutoswapIntervalSeconds = 60, -- gửi lại mỗi N giây khi vẫn đủ điều kiện
-        DiscordWebhookGodly = "",        -- Discord webhook URL for godly box drops
+        AccountOpsAutoswapOption = 2,
+        AccountOpsAutoswapGodlyOption = 3,
+        AccountOpsAutoswapIntervalSeconds = 60,
+        DiscordWebhookGodly = "",
         DiscordWebhookGodlyEnabled = true,
 
         Debug = false,
@@ -146,7 +143,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    --══════════════════════════════ SERVICES / EXEC ════════════════════════════
     
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
@@ -202,7 +198,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
     local LinuxSafe = Exec.identify:find("arceus", 1, true) ~= nil
         or Exec.identify:find("linux", 1, true) ~= nil
     
-    --════════════════════════════════════ UTIL ═════════════════════════════════
     
     local function log(msg)
         warn("[KaitunV2] " .. tostring(msg))
@@ -311,7 +306,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    --══════════════════════════════════ STATE ══════════════════════════════════
     
     local PHASE = { BOOT = "boot", LOBBY = "lobby", LOADING = "loading", ROUND = "round", DEAD = "dead" }
     
@@ -336,7 +330,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         IsTweening = false,
         CharacterFrozen = false,
     
-        -- caches
         CoinContainer = nil,
         CoinSet = nil,            
         PlayerData = nil,
@@ -352,14 +345,12 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         LobbyPadCZ = nil,
         LobbyStandCF = nil,       
     
-        -- stats
         Stats = {
             collected = 0, rounds = 0, bagCurrent = 0, bagMax = 0,
             inventoryCoins = nil, inventoryBase = nil, inventoryBaseAt = nil,
             startedAt = os.clock(),
         },
     
-        -- infra
         GameReady = false,
         OptEarlyApplied = false,   
         OptApplied = false,      
@@ -445,7 +436,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return data[player.Name]
     end
     
-    -- "Murderer" | "Sheriff" | "Innocent" | nil (chưa vào round)
     function K:GetRole()
         local my = self:GetMyRoundData()
         return my and my.Role or nil
@@ -465,13 +455,9 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 return true
             end
         end
-        -- Không có data → tin CoinsActive (round vẫn chạy)
         return self.CoinsActive
     end
     
-    --═════════════════════════════ PROFILE / INVENTORY ════════════════════════
-    -- Coin inventory thật = ProfileData.Materials.Owned.Coins (verify ShopPhone).
-    -- Module sync qua ChangeInventoryItem → InventoryDataChanged.
     
     local function extractInventoryCoins(pd)
         if type(pd) ~= "table" then
@@ -637,8 +623,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return math.max(0, (self:GetInventoryCoins() - base) / mins)
     end
     
-    --════════════════════════════ BATCH DESTROY PUMP ═══════════════════════════
-    -- Destroy dồn cục gây spike ở 10 FPS → xả theo budget mỗi Heartbeat.
     
     local function isCharacterProtected(inst)
         if not inst then
@@ -684,9 +668,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return false
     end
     
-    -- Case-insensitive "spawn" match: TeleportToPart trỏ tới part trong map model
-    -- (CharacterClient đọc p3.Position — verify Studio) → spawn subtree PHẢI sống
-    -- kể cả khi BlockMapLoad destroy toàn bộ geometry còn lại.
     local function isSpawnRelated(inst)
         if not inst then
             return false
@@ -716,7 +697,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
     end
     
     function K:QueueDestroy(inst)
-        -- Bất biến cứng: KHÔNG BAO GIỜ destroy coin subtree / spawns / character
         if not inst or not inst.Parent or self.DestroyedMark[inst] then
             return
         end
@@ -741,7 +721,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return n
     end
 
-    -- Startup / pass cleanup: xả hết queue ngay (không chờ Heartbeat 30/frame).
     function K:FlushDestroyQueue(maxItems)
         maxItems = maxItems or 5000
         local total = 0
@@ -755,15 +734,12 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return total
     end
     
-    --═════════════════════════════════ OPTIMIZER ═══════════════════════════════
     
     local WORKSPACE_LOBBY_DESTROY = {
         "Lobby", "RegularLobby", "LoadLobby", "ServerStatus", "EffectLoader", "PetContainer",
         "WeaponDisplays", "GameSettings", "RoundTimerPart", "VotePads", "ServerVersion",
     }
     
-    -- Whitelist script PHẢI giữ (Phụ lục A plan). CharacterClient = P0: disable nó
-    -- là kẹt lobby vĩnh viễn (TeleportToPart không ai xử lý).
     local SCRIPT_KEEP = {
         "Kaitun", "CharacterClient", "CoinVisualizer", "CoinBag", "Unfade",
         "RoleSelector", "Preloader", "ControlsEnable", "PlayerScriptsLoader",
@@ -802,7 +778,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             settings().Rendering.MeshQuality = Enum.MeshQuality.Level01
         end)
         safe(function()
-            -- full strip (merge từ opt_v2): shadows/fog/env reflections về 0
             Lighting.GlobalShadows = false
             Lighting.Brightness = 1
             Lighting.FogEnd = 9e9
@@ -854,9 +829,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end)
     end
     
-    -- Strip lobby NHƯNG giữ Spawns + tạo lobby pad TRƯỚC khi sàn biến mất.
-    -- Verify Studio: SpawnLocation lobby transparent/CanCollide=false (không phải
-    -- sàn) và FallenPartsDestroyHeight=NaN → mất sàn = rơi vĩnh viễn.
     function K:StripLobbyModels()
         if not Config.StripLobby then
             return 0
@@ -897,7 +869,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             end
         end
 
-        -- Summer2026: decor nằm trong Workspace.Lobby.{Lobby,NPC,VotePads,...}
         for _, child in workspace:GetChildren() do
             if child:IsA("Model") and isLobbyModel(child) then
                 totalQueued += stripLobbyShell(child)
@@ -940,7 +911,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return queued, blocked, flushed
     end
 
-    -- Execute-time cleanup: pass đồng bộ ngay + retry async nếu Lobby/map replicate muộn.
     function K:RunStartupMapCleanup()
         print("[KaitunV2] map cleanup start...")
         local function runPass(label)
@@ -1007,7 +977,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    -- Ẩn cả player respawn/join sau này (event-driven, không quét lại workspace)
     function K:ArmHideOtherPlayers()
         if not Config.HideOtherPlayers then
             return
@@ -1059,7 +1028,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         self:EnsureCharacterClient()
     end
     
-    -- P0: bảo đảm CharacterClient luôn enabled (game teleport phụ thuộc nó)
     function K:EnsureCharacterClient()
         safe(function()
             local char = player.Character
@@ -1090,7 +1058,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 end
             end
         end
-        -- Stub GUI mà FadeModule/Unfade mong đợi — tránh error spam sau strip
         for _, spec in { { "CameraFade", "ScreenGui" }, { "SpawnFade", "ScreenGui" }, { "InputContext", "Folder" } } do
             if not pg:FindFirstChild(spec[1]) then
                 safe(function()
@@ -1134,8 +1101,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return false
     end
     
-    -- Strip map model: giữ CoinContainer + Spawns, destroy phần còn lại theo queue.
-    -- StripMap = toàn bộ geometry; chỉ StripMapDecor = folder decor thôi.
     function K:StripMapModel(map)
         if not map or not map.Parent then
             return
@@ -1168,9 +1133,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    -- Nghe map replicate trong LOADING → strip ngay khi xuất hiện.
-    -- Chỉ nối khi loading, ngắt khi round end (không watcher thường trực).
-    -- BlockMapLoad đã arm watcher thường trực → bỏ qua (không double-strip).
     function K:ArmMapStripper()
         if Config.BlockMapLoad and self._blockMapArmed then
             return
@@ -1188,7 +1150,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                     if token ~= K._roundToken or not child.Parent then
                         return
                     end
-                    -- map model = có CoinContainer hoặc trùng tên map đã vote
                     if child:FindFirstChild("CoinContainer")
                         or (K.ExpectedMapName and child.Name == K.ExpectedMapName)
                     then
@@ -1218,7 +1179,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 end)
             end
         end))
-        -- map đã tồn tại sẵn (inject giữa round)
         for _, child in workspace:GetChildren() do
             if child:IsA("Model") and child ~= player.Character and child:FindFirstChild("CoinContainer") then
                 self:StripMapModel(child)
@@ -1226,13 +1186,7 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    --═══════════════════ INSTANT OPT ENGINE (nhúng từ opt_v2) ══════════════════
-    -- Chạy NGAY khi execute (InstantOpt) — không chờ boot/round. Mọi destroy đều
-    -- qua QueueDestroy → pump theo budget của Heartbeat hub sẵn có (không tạo
-    -- thêm Heartbeat connection, không double pump).
     
-    -- Inbound instance filter (lớp 1 opt_v2): junk vừa replicate tới là dọn ngay.
-    -- Client không firewall được replication — đây là mức gần nhất hợp lệ.
     local JUNK_DESTROY_CLASSES = {
         ParticleEmitter = true, Trail = true, Beam = true, Smoke = true,
         Fire = true, Sparkles = true, Decal = true, Texture = true,
@@ -1266,7 +1220,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             return
         end
         if JUNK_DESTROY_CLASSES[cls] then
-            -- QueueDestroy tự enforce bất biến: coin/spawn/char/pad không bị đụng
             if cls == "ParticleEmitter" or cls == "Trail" or cls == "Beam" then
                 safe(function() inst.Enabled = false end)
             end
@@ -1274,7 +1227,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    -- Watcher thường trực (arm 1 lần cả session, không per-round)
     function K:ArmInboundFilter()
         if not Config.FilterIncomingInstances then
             return
@@ -1309,18 +1261,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end))
     end
     
-    -- BLOCK MAP LOAD (chế độ siêu mạnh): map mới replicate vào workspace bị strip
-    -- NGAY KHI TỚI — chỉ giữ lại tối thiểu cho farm hoạt động:
-    --   • CoinContainer + Coin_Server + TouchInterest (farm — verify Studio:
-    --     CoinContainer là Model con trực tiếp map, Coin_Server là Part con)
-    --   • Spawns / mọi part tên chứa "spawn" (TeleportToPart trỏ tới part TRONG
-    --     map model; CharacterClient đọc p3.Position → part phải sống. Map pad
-    --     của kaitun đặt dưới spawn trong OnTeleportToPart → không rơi void)
-    --   • Raggy / Characters (ragdoll — isCharacterProtected)
-    --   • KaitunV2Pads
-    -- Verify Studio 22/07: không script client nào đọc geometry map (grep
-    -- Raggy/CoinContainer/Spawns = 0 hit trong 314 script; CoinVisualizer chỉ
-    -- dùng CollectionService tag "CoinVisual") → destroy geometry an toàn.
     function K:BlockIncomingModel(model)
         if not model or not model.Parent or self._blockedMaps[model] then
             return
@@ -1328,8 +1268,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         if model == player.Character or isCharacterProtected(model) or isKaitunPart(model) then
             return
         end
-        -- character/NPC có Humanoid → để HideOtherPlayers quyết định, không block.
-        -- GetPlayerFromCharacter bắt cả case Humanoid CHƯA replicate xong.
         if model:FindFirstChildOfClass("Humanoid") then
             return
         end
@@ -1340,9 +1278,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         if isPlayerChar then
             return
         end
-        -- lobby model = Workspace.Lobby / RegularLobby (Spawns, không CoinContainer).
-        -- StripLobby=false → không đụng lobby; true → tạo lobby pad TRƯỚC khi
-        -- sàn biến mất (giữ fix anti-fall LobbyPad)
         if isLobbyModel(model) then
             if not Config.StripLobby then
                 return
@@ -1360,8 +1295,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             self:QueueDestroy(child)
         end
     
-        -- strip mọi child hiện có (giữ model shell — CoinContainer/Spawns về sau
-        -- vẫn có chỗ đậu) + strip CoinVisual trong coin đã tới
         for _, child in model:GetChildren() do
             stripChild(child)
         end
@@ -1379,14 +1312,12 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             end
         end
     
-        -- child replicate muộn (map lớn stream dần) → chặn tiếp khi tới
         self._blockMapN = (self._blockMapN or 0) + 1
         local key = "blockmap_" .. self._blockMapN
         self._maid:Give(key, model.ChildAdded:Connect(function(child)
             task.defer(function()
                 if not K.Destroyed and child.Parent then
                     if child.Name == "CoinContainer" then
-                        -- coin visuals của container tới muộn
                         if Config.StripCoinVisuals then
                             K:StripMapModel(model)
                         end
@@ -1396,7 +1327,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 end
             end)
         end))
-        -- model rời workspace (round end, server dọn) → nhả connection
         self._maid:Give(key .. "_gone", model.AncestryChanged:Connect(function(_, parent)
             if parent == nil then
                 K._maid:Clean(key)
@@ -1426,11 +1356,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         log("BlockMapLoad armed — map geometry sẽ bị chặn, chỉ coins/spawns load")
     end
     
-    -- Remote handler filter (lớp 2 opt_v2): Disable mọi connection OnClientEvent
-    -- của RemoteEvent NGOÀI whitelist → remote vẫn tới nhưng 0 CPU handler.
-    -- Outgoing (FireServer/InvokeServer) KHÔNG BAO GIỜ bị đụng. Connection của
-    -- kaitun đều trên remote whitelist → tự an toàn. Chạy tối đa 2 pass
-    -- (GameReady + LoadingMap đầu) vì game script connect dần trong lúc boot.
     function K:ApplyRemoteHandlerFilter()
         if not Config.FilterRemoteHandlers or not Exec.getConnections then
             return
@@ -1446,9 +1371,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                     set[tostring(name)] = true
                 end
             end
-            -- Kaitun connects EventQuestProgressed itself for live daily-quest
-            -- progress — never let the filter disable our own handler, even if
-            -- the user overrides EssentialRemotes.
             set.EventQuestProgressed = true
             self._essentialRemotes = set
         end
@@ -1483,8 +1405,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         table.clear(self._disabledConns)
     end
     
-    -- Opt an toàn lúc execute (không đụng boot flow / PlayerGui / script game).
-    -- InstantOpt=true → chạy ngay ở INIT; nếu không, ApplyOptimizationOnce gọi.
     function K:ApplyEarlyOpt()
         if self.OptEarlyApplied or Config.OptimizationMode == "off" then
             return
@@ -1503,8 +1423,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             .. (LinuxSafe and ", LinuxSafe" or "") .. ")")
     end
     
-    -- Phần boot-sensitive (chờ GameReady): disable script game / strip PlayerGui /
-    -- remote filter — đụng sớm quá sẽ phá DeviceSelect/Loading flow.
     function K:ApplyOptimizationOnce()
         if self.OptApplied or Config.OptimizationMode == "off" then
             return
@@ -1519,7 +1437,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             .. (LinuxSafe and ", LinuxSafe" or "") .. ")")
     end
     
-    --═════════════════════════════════ MOVEMENT ════════════════════════════════
     
     function K:GetUprightCF(pos, hrp)
         if hrp then
@@ -1556,7 +1473,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         if not char or not hum then
             return
         end
-        -- KHÔNG anchor HRP: anchored không replicate → server không thấy vị trí
         hum.PlatformStand = true
         hum.AutoRotate = false
         hum.WalkSpeed = 0
@@ -1600,9 +1516,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end)
     end
     
-    -- Tween mượt time-based: đúng quãng đường theo thời gian thực nên ổn định
-    -- ở FPS thấp (frame ít nhưng mỗi frame lerp xa hơn). KHÔNG teleport.
-    -- Trả về false nếu bị ngắt (round end / chết / stop).
     function K:TweenTo(targetPos, token)
         local _, hrp = getCharacter()
         if not hrp then
@@ -1637,11 +1550,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return true
     end
     
-    -- Pads vô hình (client-only): sàn VẬT LÝ thay cho geometry đã strip.
-    -- Nhân vật ĐỨNG YÊN trên pad = physics tự nghỉ, không cần giữ CFrame mỗi
-    -- frame, không anchor HRP (replication coin farm vẫn chạy). 2 pad:
-    --   "Pad"      — map, reposition mỗi round (spawn part → cụm coin)
-    --   "LobbyPad" — lobby, persistent CẢ SESSION (lobby tĩnh, Y≈502)
     
     local function ensurePadPart(name)
         local folder = workspace:FindFirstChild("KaitunV2Pads")
@@ -1666,7 +1574,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return pad
     end
     
-    -- Map pad dưới vùng coin / spawn part — đỡ rơi void giữa các lần tween
     function K:EnsurePad(centerX, centerZ, topY)
         if not Config.AutoCreatePad then
             return
@@ -1677,7 +1584,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         self.PadStandCF = CFrame.new(centerX, topY + 3, centerZ)
     end
     
-    -- Reposition map pad theo bbox cụm coin (gọi lúc farm start)
     function K:SyncPadToCoins()
         if not Config.AutoCreatePad or not self.CoinSet then
             return
@@ -1698,8 +1604,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    -- Lobby pad: top đúng mặt SpawnLocation. Tính 1 lần từ
-    -- Workspace.Lobby.Spawns (Summer2026) / RegularLobby.Spawns rồi cache.
     function K:EnsureLobbyPad()
         if not Config.AutoCreatePad then
             return
@@ -1733,7 +1637,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 end
             end)
             if not topY then
-                -- fallback: vị trí nhân vật / spawn CF đã capture
                 local _, hrp = getCharacter()
                 if hrp and isLobbyY(hrp.Position.Y) then
                     local p = hrp.Position
@@ -1757,7 +1660,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         pad.CFrame = CFrame.new(self.LobbyPadCX, self.LobbyPadTopY - 2, self.LobbyPadCZ)
     end
     
-    -- Round cleanup: chỉ bỏ map pad — LobbyPad phải sống qua các round
     function K:RemoveMapPad()
         local folder = workspace:FindFirstChild("KaitunV2Pads")
         local pad = folder and folder:FindFirstChild("Pad")
@@ -1778,8 +1680,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         self.LobbyPadTopY = nil
     end
     
-    --═══════════════════════════════ COIN MANAGER ══════════════════════════════
-    -- Cache container + coin set nuôi bằng event; KHÔNG GetDescendants mỗi tick.
     
     function K:FindCoinContainer()
         local cc = self.CoinContainer
@@ -1787,7 +1687,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             return cc
         end
         self.CoinContainer = nil
-        -- CoinContainer là con trực tiếp của map model (verify MCP) → quét nông
         for _, child in workspace:GetChildren() do
             if child:IsA("Model") and child ~= player.Character then
                 local found = child:FindFirstChild("CoinContainer")
@@ -1797,7 +1696,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 end
             end
         end
-        -- fallback: sâu (map cấu trúc lạ)
         local deep = workspace:FindFirstChild("CoinContainer", true)
         if deep and not isCharacterProtected(deep) then
             self:SetCoinContainer(deep)
@@ -1853,8 +1751,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return (id == nil or id == "") and Config.CoinType == "Coin"
     end
     
-    -- Coin gần nhất chưa thăm (squared distance — không sqrt trong vòng lặp).
-    -- Bỏ qua coin thuộc bag đã đầy (FullBags theo CoinCollected).
     function K:NearestCoin(fromPos)
         local best, bestDist = nil, math.huge
         local coinSet = self.CoinSet
@@ -1888,7 +1784,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return n
     end
     
-    -- Chờ TouchInterest xuất hiện (event + poll thưa) — server gắn sau replicate
     function K:WaitForTouchInterest(token)
         local deadline = os.clock() + (Config.TouchInterestWait or 8)
         while os.clock() < deadline and token == self._roundToken and self.CoinsActive do
@@ -1900,16 +1795,13 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return self:CountCollectableCoins() > 0
     end
     
-    --═════════════════════════════════ COLLECT ═════════════════════════════════
     
     function K:GetCollectPosition(coin, hrp)
         if Exec.fireTouch then
-            -- có firetouchinterest → đứng dưới coin (đỡ khuất camera)
             local hrpHalf = ((hrp and hrp.Size.Y) or 2) * 0.5
             local y = coin.Position.Y - coin.Size.Y * 0.5 - hrpHalf - (Config.CoinBelowOffset or 2.5)
             return Vector3.new(coin.Position.X, y, coin.Position.Z)
         end
-        -- không có → phải overlap thật để server Touched tự bắn
         return coin.Position
     end
     
@@ -1924,7 +1816,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 Exec.fireTouch(hrp, coin, 1)
             end)
         end
-        -- game validate server-side qua GetCoin(coinId)
         local coinId = coin:GetAttribute("CoinID")
         if type(coinId) == "string" and coinId ~= "" and Remotes.GetCoin then
             safe(function()
@@ -1932,18 +1823,15 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             end)
         end
         task.wait(Config.CollectSettleDelay or 0.08)
-        -- coin biến mất / mất TouchInterest = server nhận
         if not coin.Parent or not coin:FindFirstChild("TouchInterest") then
             self.Visited[coin] = true
             self.Stats.collected += 1
             return true
         end
-        -- chưa ăn được (murderer gần? lag?) — đánh dấu để không kẹt 1 coin
         self.Visited[coin] = true
         return false
     end
     
-    --════════════════════════════════ FARM LOOP ════════════════════════════════
     
     function K:StartFarm()
         if self.Running or not Config.Enabled then
@@ -1963,7 +1851,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         self:FreezeCharacter()
         self:MinimizeCharacter()
     
-        -- pad dưới tâm cụm coin (chống rơi void ở 10 FPS)
         self:SyncPadToCoins()
     
         log(string.format("Farm start — role=%s coins=%d", tostring(self:GetRole()), self:CountCollectableCoins()))
@@ -1986,8 +1873,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 end
                 local coin = K:NearestCoin((K.LastFarmCF and K.LastFarmCF.Position) or hrp.Position)
                 if not coin then
-                    -- hết coin nhìn thấy: coin respawn theo đợt → đợi ngắn,
-                    -- reset visited nếu lâu quá (coin cũ có thể mọc TouchInterest lại)
                     idleSince = idleSince or os.clock()
                     if os.clock() - idleSince > 5 then
                         K.Visited = setmetatable({}, { __mode = "k" })
@@ -2017,7 +1902,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             self.Stats.bagCurrent, self.Stats.bagMax, self.Stats.collected))
         self:StopFarm()
         if Config.ResetWhenFull then
-            -- reset → respawn lobby → AwaitNextRound chặn farm tới round sau
             self.AwaitNextRound = true
             safe(function()
                 local _, _, hum = getCharacter()
@@ -2028,7 +1912,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    --═══════════════════════════════ STATE MACHINE ═════════════════════════════
     
     function K:SetPhase(phase, why)
         if self.Phase == phase then
@@ -2039,7 +1922,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         self:UpdateHud()
     end
     
-    -- Dọn toàn bộ tài nguyên round (connections, farm, pad, coin cache)
     function K:CleanupRound()
         self._roundToken += 1
         self:StopFarm()
@@ -2052,27 +1934,24 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         self:RemoveMapPad()
     end
     
-    -- LoadingMap: map đã vote, còn ~11s Ở LOBBY trước khi TeleportToPart
     function K:OnLoadingMap(mapName)
         self:CleanupRound()
         self.CoinsActive = false
         self.TeleportSeen = false
         self.LoadingMapAt = os.clock()
-        self.AwaitNextRound = false -- round MỚI → mở lại farm
+        self.AwaitNextRound = false
         self.ExpectedMapName = (type(mapName) == "string" and mapName ~= "") and mapName or nil
         self:SetPhase(PHASE.LOADING, "LoadingMap")
         self:UnfreezeCharacter()
         self:EnsureCharacterClient()
         self:CaptureLobbySpawn()
         self:ArmMapStripper()
-        self:ApplyRemoteHandlerFilter() -- pass 2 (game script đã connect xong)
+        self:ApplyRemoteHandlerFilter()
         if Config.MuteSounds then
             task.defer(function() self:MuteSounds() end)
         end
     end
     
-    -- RoundStart: chỉ refresh loading; KHÔNG đè round đang farm (fires sau
-    -- CoinsStarted trong một số edge case)
     function K:OnRoundStart()
         if self.CoinsActive or self.Running then
             return
@@ -2085,9 +1964,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
     
     function K:OnTeleportToPart(spawnPart)
         self.TeleportSeen = true
-        -- CharacterClient PivotTo — mình không đụng vào vị trí lúc này.
-        -- NHƯNG map đã bị strip → đặt ngay map pad dưới spawn part để nhân vật
-        -- có sàn đáp trong lúc chờ CoinsStarted (window rơi void trước đây).
         if typeof(spawnPart) == "Instance" and spawnPart:IsA("BasePart") then
             dbg("TeleportToPart -> " .. spawnPart:GetFullName())
             local p = spawnPart.Position
@@ -2095,9 +1971,7 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    -- CoinsStarted: sự thật duy nhất để farm. args = bag visibility table.
     function K:OnCoinsStarted(bags)
-        -- round mới mà farm cũ còn chạy (miss round end + LoadingMap) → dọn trước
         if self.Running then
             self:CleanupRound()
         end
@@ -2115,7 +1989,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             dbg("Bags: " .. table.concat(names, ", "))
         end
         if self.AwaitNextRound then
-            -- chết round trước & CoinsStarted bắn khi mình ở lobby → không farm
             dbg("CoinsStarted while AwaitNextRound — skip farm")
             return
         end
@@ -2155,7 +2028,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             if type(coinType) == "string" then
                 self.FullBags[coinType] = true
             end
-            -- Full khi: đang farm loại đó ("Any" = full là full)
             if Config.CoinType == "Any" or Config.CoinType == coinType then
                 self.BagFull = true
             end
@@ -2192,7 +2064,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    -- Inject giữa round: map + coin đã có sẵn → vào ROUND luôn
     function K:SyncMidRound()
         if self.CoinsActive then
             return
@@ -2207,19 +2078,14 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
     
-    --═══════════════════════════════ HEARTBEAT HUB ═════════════════════════════
-    -- Đúng 1 Heartbeat connection: destroy pump + farm hold + void rescue.
-    -- Việc nhẹ throttle bằng accumulator, không tạo thêm connection.
     
     function K:StartHeartbeat()
         local rescueAccum = 0
         self._maid:Give("heartbeat", RunService.Heartbeat:Connect(function(dt)
-            -- 1) xả destroy queue theo budget
             if #K.DestroyQueue > 0 then
                 K:PumpDestroyQueue()
             end
     
-            -- 2) farm hold: giữ vị trí giữa các tween (chống trôi/rớt)
             if K.Running and not K.IsTweening and K.LastFarmCF then
                 local _, hrp = getCharacter()
                 if hrp then
@@ -2232,7 +2098,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                 end
             end
     
-            -- 3) void rescue (throttle 0.25s) — backstop, pad vật lý mới là sàn chính
             rescueAccum += dt
             if rescueAccum >= 0.25 then
                 rescueAccum = 0
@@ -2241,12 +2106,10 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                     local y = hrp.Position.Y
                     local below = Config.VoidRescueBelowY or 15
                     if K.Running then
-                        -- đang farm: tween/hold tự quản, chỉ kéo về khi lọt pad
                         if K.PadTopY and K.LastFarmCF and y < K.PadTopY - below then
                             K:ApplyCF(K.LastFarmCF)
                         end
                     elseif K.PadTopY and K.PadStandCF then
-                        -- có map pad (sau TeleportToPart, trước/giữa farm)
                         if y < K.PadTopY - below then
                             K:ZeroVelocity(hrp)
                             safe(function()
@@ -2254,9 +2117,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                             end)
                         end
                     elseif K.Phase ~= PHASE.ROUND and not (K.Phase == PHASE.LOADING and K.TeleportSeen) then
-                        -- ở lobby (lobby/dead/boot/loading-chưa-teleport): chỉ
-                        -- rescue khi ĐANG RƠI thật (vel.Y âm) — không giật nhân
-                        -- vật đang đứng yên nơi khác
                         local standCF = K.LobbySpawnCF or K.LobbyStandCF
                         local topY = K.LobbyPadTopY or (standCF and standCF.Position.Y - 3.1)
                         if standCF and topY and y < topY - below
@@ -2274,15 +2134,12 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end))
     end
     
-    --════════════════════════════════ WATCHDOG ═════════════════════════════════
-    -- Poll thưa (5s) bắt các case remote miss: round treo, farm chưa nổ, v.v.
     
     function K:StartWatchdog()
         self._maid:Give("watchdog", task.spawn(function()
             while not K.Destroyed do
                 task.wait(5)
                 safe(function()
-                    -- round quá lâu không có end event → coi như về lobby
                     if K.CoinsActive and K.RoundStartedAt
                         and os.clock() - K.RoundStartedAt > (Config.RoundMaxDuration or 400)
                     then
@@ -2290,14 +2147,12 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                         K:OnRoundEnded("watchdog-timeout")
                         return
                     end
-                    -- CoinsActive mà farm chưa chạy (miss event / respawn kỳ lạ)
                     if K.CoinsActive and not K.Running and not K.AwaitNextRound
                         and Config.Enabled and Config.AutoStart and K:IsAliveInRound()
                         and K:CountCollectableCoins() > 0
                     then
                         K:StartFarm()
                     end
-                    -- đứng lobby lâu mà thực ra map đang có coin (miss CoinsStarted)
                     if K.Phase == PHASE.LOBBY and not K.CoinsActive then
                         local _, hrp = getCharacter()
                         if hrp and not isLobbyY(hrp.Position.Y) then
@@ -2310,9 +2165,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end))
     end
     
-    --═══════════════════════════════════ BOOT ══════════════════════════════════
-    -- Acc mới / mobile: game bắt chọn device rồi mới clone MainGUI + báo server.
-    -- Mirror flow của ReplicatedFirst.UISelector.Loading (gọn).
     
     function K:GetDeviceChoice()
         if Config.AutoDevice == "Phone" or Config.AutoDevice == "Tablet" or Config.AutoDevice == "PC" then
@@ -2373,7 +2225,7 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
         local device = self:GetDeviceChoice()
         if device == "PC" then
-            device = "Phone" -- DeviceSelect chỉ hiện trên touch client
+            device = "Phone"
         end
         pg:SetAttribute("Device", device)
         _G.MobileDevice = device
@@ -2383,7 +2235,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         if not hasMain then
             self:InstallMainGui(device)
         end
-        -- dọn màn boot + báo server load xong
         for _, name in { "DeviceSelect", "JoinPhone", "Join", "Join_Old", "Loading" } do
             local inst = pg:FindFirstChild(name)
             if inst then
@@ -2406,7 +2257,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             return true
         end
         local deadline = os.clock() + (Config.GameReadyTimeout or 120)
-        -- event: DeviceSelect xuất hiện muộn → xử lý ngay
         safe(function()
             local pg = player:WaitForChild("PlayerGui", 15)
             if pg then
@@ -2443,12 +2293,11 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             end
             task.wait(0.5)
         end
-        self.GameReady = true -- timeout: cứ chạy tiếp, watchdog lo phần còn lại
+        self.GameReady = true
         self._maid:Clean("bootWatcher")
         return false
     end
     
-    --════════════════════════════════════ HUD ══════════════════════════════════
     
     function K:EnsureHud()
         if not Config.ShowHud or self.HudLabel then
@@ -2521,7 +2370,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end)
     end
     
-    --═════════════════════════════ SYSTEM / SAFETY ═════════════════════════════
     
     function K:ApplyFpsCap()
         if not Config.LockFps then
@@ -2552,7 +2400,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end))
     end
     
-    -- Auto-rejoin khi disconnect: queue script (nếu có url) rồi teleport lại place
     function K:ArmAutoRejoin()
         if not Config.AutoRejoin then
             return
@@ -2591,7 +2438,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end))
     end
     
-    --════════════════════════════ CHARACTER BINDING ════════════════════════════
     
     function K:BindCharacter(char)
         self.CharacterFrozen = false
@@ -2611,20 +2457,17 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             self:MinimizeCharacter()
             task.wait(0.2)
             if isLobbyY(hrp.Position.Y) then
-                -- respawn về lobby (sau chết / round end)
                 if self.Phase == PHASE.DEAD then
                     self:SetPhase(PHASE.LOBBY, "respawn-lobby")
                 end
                 self:CaptureLobbySpawn()
                 self:EnsureLobbyPad()
             elseif self.CoinsActive and not self.AwaitNextRound and token == self._roundToken then
-                -- respawn giữa round còn sống (hiếm) → farm tiếp
                 self:StartFarm()
             end
         end)
     end
     
-    --═══════════════════════════════ REMOTE WIRING ═════════════════════════════
     
     function K:ConnectRemotes()
         if not resolveRemotes() then
@@ -2669,7 +2512,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         dbg("Remotes connected")
     end
     
-    --═════════════════════════════════ DESTROY ═════════════════════════════════
     
     function K:Destroy(why)
         if self.Destroyed then
@@ -2692,10 +2534,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         log("Destroyed (" .. tostring(why or "manual") .. ")")
     end
     
-    --══════════════════════════════ SUMMER 2026 EVENT ═══════════════════════════
-    -- MCP-verified: currency SummerKey2026 ("Shells"), box Summer2026Box,
-    -- remotes ReplicatedStorage.Remotes.Events.Summer2026Remotes.*
-    -- Shop unbox: OpenCrate:InvokeServer(boxId, "MysteryBox", currencyId)
     
     local Summer2026 = {
         _ready = false,
@@ -2716,6 +2554,8 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         _dailyTrackId = nil,
         _dailyPollAt = nil,
         _dailyPollBusy = false,
+        _serverProfile = nil,
+        _godlyScanStamp = nil,
         _profileSignalsConnected = false,
         _sync = nil,
     }
@@ -2857,27 +2697,53 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return type(rarity) == "string" and string.lower(rarity) == "godly"
     end
 
-    -- Best-effort scan of the account's owned inventory for any Godly-rarity
-    -- item. ProfileData.Inventory is keyed by category (Knives/Guns/Pets/...) →
-    -- { itemId = ownedCount }. Rarity is resolved via the Sync buckets, same as
-    -- unbox rewards. Returns true on the first Godly found.
-    local function summerProfileHasGodlyItem(pd)
-        if type(pd) ~= "table" or type(pd.Inventory) ~= "table" then
-            return false
+    local function summerScanOwnedGodly(owned, checked)
+        for key, val in owned do
+            local itemId
+            if type(key) == "string" then
+                if type(val) ~= "number" or val > 0 then
+                    itemId = key
+                end
+            elseif type(val) == "string" then
+                itemId = val
+            end
+            if itemId and itemId ~= "" then
+                checked += 1
+                local item = summerResolveRewardItem(itemId)
+                if item and summerIsGodlyRarity(item.rarity) then
+                    return item, checked
+                end
+            end
         end
-        for _, bucket in pd.Inventory do
-            if type(bucket) == "table" then
-                for itemId, owned in bucket do
-                    if owned and type(itemId) == "string" and itemId ~= "" then
-                        local item = summerResolveRewardItem(itemId)
-                        if item and summerIsGodlyRarity(item.rarity) then
-                            return true
-                        end
+        return nil, checked
+    end
+
+    local function summerProfileHasGodlyItem(pd)
+        if type(pd) ~= "table" then
+            return false, nil, 0
+        end
+        local checked = 0
+        for _, category in pd do
+            if type(category) == "table" and type(category.Owned) == "table" then
+                local item
+                item, checked = summerScanOwnedGodly(category.Owned, checked)
+                if item then
+                    return true, item, checked
+                end
+            end
+        end
+        if type(pd.Uniques) == "table" then
+            for _, unique in pd.Uniques do
+                if type(unique) == "table" and type(unique.BaseItem) == "string" then
+                    checked += 1
+                    local item = summerResolveRewardItem(unique.BaseItem)
+                    if item and summerIsGodlyRarity(item.rarity) then
+                        return true, item, checked
                     end
                 end
             end
         end
-        return false
+        return false, nil, checked
     end
 
     local function summerSendGodlyWebhook(rewardItem, boxId)
@@ -3058,13 +2924,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return nil, trackId, title
     end
 
-    -- source "profile" = local Modules.ProfileData snapshot. It freezes at join
-    -- value here because the game's Summer2026 EventScript (the thing that
-    -- writes quest Progress back into that table) is stripped by the optimizer
-    -- → treat it as raise-only so it can never drag a fresher value back down.
-    -- "event" (EventQuestProgressed / ChangeProfileData push) and "server"
-    -- (GetProfileData pull) are authoritative and written as-is, so a daily
-    -- reset can still lower the value.
     local function summerCacheDailyProgress(progress, source, trackId)
         progress = tonumber(progress)
         if progress == nil then
@@ -3103,19 +2962,13 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return pd
     end
 
-    -- Authoritative refresh: same RemoteFunction Modules.ProfileData boots
-    -- from, so the returned table always carries the true quest Progress.
-    -- Throttled to DAILY_POLL_INTERVAL and run off-thread — HUD/autoswap
-    -- callers must never yield on the invoke — and stops once daily is done.
-    local function summerPollDailyFromServer()
-        if Summer2026._dailyPollBusy
-            or (Summer2026._dailyProgress or 0) >= DAILY_COMPLETE_PROGRESS
-        then
-            return
+    local function summerRequestServerProfile()
+        if Summer2026._dailyPollBusy then
+            return Summer2026._serverProfile
         end
         local now = os.clock()
         if Summer2026._dailyPollAt and now < Summer2026._dailyPollAt then
-            return
+            return Summer2026._serverProfile
         end
         Summer2026._dailyPollAt = now + DAILY_POLL_INTERVAL
         Summer2026._dailyPollBusy = true
@@ -3132,17 +2985,22 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             if not ok or type(fresh) ~= "table" then
                 return
             end
+            Summer2026._serverProfile = fresh
             local progress, trackId = summerReadProfileDailyProgress(fresh)
             if progress ~= nil then
                 summerCacheDailyProgress(progress, "server", trackId)
             end
         end)
+        return Summer2026._serverProfile
     end
 
-    -- Never latches: every call re-reads the local profile and keeps the
-    -- throttled server poll ticking, so HUD and the autoswap gate always see
-    -- the live value. The cache is only a fallback when both reads come up
-    -- empty, so a failed read never flickers the HUD back to 0.
+    local function summerPollDailyFromServer()
+        if (Summer2026._dailyProgress or 0) >= DAILY_COMPLETE_PROGRESS then
+            return
+        end
+        summerRequestServerProfile()
+    end
+
     local function summerGetDailyProgress(self)
         summerPollDailyFromServer()
         local progress = summerReadProfileDailyProgress(summerGetProfile(self))
@@ -3497,8 +3355,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         local eqp = remotes:FindFirstChild("EventQuestProgressed")
         if eqp and eqp:IsA("RemoteEvent") then
             self._maid:Give("summerEventQuestProgressed", eqp.OnClientEvent:Connect(function(track, progress)
-                -- Track ids come from EventInfoService, not a fixed list — also
-                -- accept any track whose top tier is the daily target.
                 if track == Summer2026._dailyTrackId
                     or track == "DailyCoins"
                     or track == "Daily"
@@ -3547,8 +3403,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     end
 
-    -- True only when the account has claimed all daily quests AND holds fewer
-    -- than AccountOpsAutoswapMaxShells shells. This is the sole autoswap gate.
     function K:AccountOpsAutoswapConditionsMet()
         self:Summer2026Resolve()
         if summerGetDailyProgress(self) < DAILY_COMPLETE_PROGRESS then
@@ -3558,22 +3412,45 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return self:Summer2026GetShells() < maxShells
     end
 
-    -- True if the account owns (or just unboxed) a Godly-rarity item. The
-    -- openbox flow latches Summer2026._hasGodly; if the latch is unset we still
-    -- scan the current profile inventory so a pre-owned Godly is picked up.
     function K:AccountOpsHasGodlyItem()
         if Summer2026._hasGodly then
             return true
         end
-        if summerProfileHasGodlyItem(summerGetProfile(self)) then
+
+        local source = "server"
+        local found, item, checked = summerProfileHasGodlyItem(summerRequestServerProfile())
+        if not found then
+            local localFound, localItem, localChecked = summerProfileHasGodlyItem(summerGetProfile(self))
+            if localFound or localChecked > checked then
+                source = "profile"
+                found, item, checked = localFound, localItem, localChecked
+            end
+        end
+
+        local stamp = found
+            and ("found:" .. tostring(item and (item.name or item.id)))
+            or ("none:" .. tostring(checked) .. ":" .. source)
+        if Summer2026._godlyScanStamp ~= stamp then
+            Summer2026._godlyScanStamp = stamp
+            if found then
+                dbg(string.format(
+                    "godly scan: found %s (%s) via %s",
+                    tostring(item and (item.name or item.id)),
+                    tostring(item and item.rarity),
+                    source
+                ))
+            else
+                dbg(string.format("godly scan: none (%d items checked, %s)", checked, source))
+            end
+        end
+
+        if found then
             Summer2026._hasGodly = true
             return true
         end
         return false
     end
 
-    -- Godly present → godly option (priority, skips the default option);
-    -- otherwise the default option. Returns option, hasGodly.
     function K:AccountOpsResolveSwapOption()
         local baseOption = tonumber(Config.AccountOpsAutoswapOption) or 2
         local godlyOption = tonumber(Config.AccountOpsAutoswapGodlyOption) or 3
@@ -3583,10 +3460,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         return baseOption, false
     end
 
-    -- HUD status lines for the Summer2026 daily quest + AccountOps autoswap
-    -- loop. Defined here (after Summer2026/summerGetDailyProgress/
-    -- DAILY_COMPLETE_PROGRESS are in scope) and called by UpdateHud via a
-    -- runtime method lookup, so lexical ordering vs UpdateHud does not matter.
     function K:Summer2026HudLines()
         if not Config.EnableSummer2026 and not Config.AccountOpsAutoswapOnDailyComplete then
             return nil
@@ -3626,7 +3499,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         if Config.AccountOpsAutoswapOnDailyComplete ~= true then
             return
         end
-        -- A single loop owns the repeated sends; don't start a second one.
         if Summer2026._autoswapLoopActive then
             return
         end
@@ -3643,15 +3515,10 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             return
         end
 
-        -- Loop re-resolves the option each tick; seed with the current choice.
         local option = self:AccountOpsResolveSwapOption()
         self:AccountOpsStartAutoswapLoop({ apiKey = apiKey, baseUrl = baseUrl, option = option })
     end
 
-    -- Waits the delay once conditions are met, then re-sends every interval
-    -- seconds while they still hold. Re-checks daily+shells at the top of each
-    -- iteration and stops (re-armable) when they no longer hold. A send failure
-    -- does not stop the loop, so the next tick still goes out.
     function K:AccountOpsStartAutoswapLoop(ctx)
         if Summer2026._autoswapLoopActive then
             return
@@ -3674,9 +3541,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             interval
         ))
         self._maid:Give("accountOpsAutoswapLoop", task.spawn(function()
-            -- Decide the option up front — before the initial wait — so the
-            -- Godly inventory check + log happens immediately when conditions
-            -- are met. The swap that fires after the wait uses this decision.
             local option, hasGodly = self:AccountOpsResolveSwapOption()
             ctx.option = option
             Summer2026._autoswapOption = option
@@ -3696,9 +3560,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                     summerPrint("Autoswap conditions no longer met — stopping")
                     break
                 end
-                -- After the first send, re-evaluate the option every tick so a
-                -- mid-loop Godly upgrades option 2 → 3 (and reverts if the
-                -- inventory changes). The first send reuses the pre-wait pick.
                 if not firstSend then
                     option, hasGodly = self:AccountOpsResolveSwapOption()
                     ctx.option = option
@@ -3722,9 +3583,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end))
     end
 
-    -- Sends the autoswap request once. Returns true only if the swap was
-    -- accepted; logs the outcome but keeps no "already sent" latch so the loop
-    -- can keep re-sending while conditions hold.
     function K:AccountOpsPerformAutoswap(ctx)
         local swapped = false
         local ok, err = pcall(function()
@@ -3844,7 +3702,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end))
     end
     
-    --═══════════════════════════════════ INIT ══════════════════════════════════
     
     do
         log(string.format("Kaitun V2 %s loading (exec=%s, fireTouch=%s)",
@@ -3852,13 +3709,10 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             Exec.identify ~= "" and Exec.identify or "unknown",
             Exec.fireTouch and "yes" or "NO — dùng overlap thật"))
     
-        -- FallenPartsDestroyHeight = NaN (verify Studio) → rơi void không bao giờ
-        -- chết. Set giá trị hữu hạn = lưới cuối: lọt hết mọi pad thì chết +
-        -- respawn lobby thay vì rơi vĩnh viễn. (client-set, chỉ ảnh hưởng local)
         if Config.FixFallenPartsHeight then
             safe(function()
                 local h = workspace.FallenPartsDestroyHeight
-                if h ~= h or h < -100000 then -- NaN hoặc giá trị vô lý
+                if h ~= h or h < -100000 then
                     workspace.FallenPartsDestroyHeight = -500
                 end
             end)
@@ -3867,12 +3721,9 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         K:ApplyFpsCap()
         K:StartHeartbeat()
         K:InitProfileData()
-        -- INSTANT OPT: vừa execute là opt luôn — không chờ boot/lobby/round.
-        -- (Heartbeat hub đã chạy → destroy pump sẵn sàng xả queue.)
         if Config.InstantOpt then
             K:ApplyEarlyOpt()
         end
-        -- resolveRemotes có WaitForChild — chạy async để không chặn init
         K._maid:Give("connectRemotes", task.spawn(function()
             K:ConnectRemotes()
         end))
@@ -3886,7 +3737,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end))
     
         K._maid:Give("mainThread", task.spawn(function()
-            -- boot trước (mobile/acc mới), rồi optimization, rồi sync mid-round
             K:WaitForGameReady()
             K:EnsureHud()
             K:InitPlayerData()
