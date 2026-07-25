@@ -14,6 +14,7 @@ local DEFAULT_CONFIG = {
     CheckIntervalSec = 120,
     LowPlayerMax = 2, 
     BagFailHopThreshold = 5,
+    CoinStallHopSeconds = 300,
     ServerHopUrl = "https://raw.githubusercontent.com/shuys1230sxmcsweiqpxcv/Evomon/refs/heads/main/serverhop.lua",
 }
 
@@ -52,6 +53,11 @@ local BagState = {
     bagMax = 0,
     bagWasFull = false,
     consecutiveFails = 0,
+}
+
+local CoinStallState = {
+    collected = 0,
+    windowStart = 0,
 }
 
 local connections = {}
@@ -157,7 +163,45 @@ local function onCoinsStarted()
     log("CoinsStarted — theo dõi bag round mới")
 end
 
+local function tryGetInventoryCoins()
+    local ok, pd = safe(function()
+        local mod = ReplicatedStorage:FindFirstChild("Modules")
+        mod = mod and mod:FindFirstChild("ProfileData")
+        if not mod then
+            return nil
+        end
+        return require(mod)
+    end)
+
+    if not ok or type(pd) ~= "table" then
+        return nil
+    end
+
+    local mats = pd.Materials
+    if type(mats) == "table" then
+        local owned = mats.Owned
+        if type(owned) == "table" then
+            local coins = tonumber(owned.Coins)
+            if coins then
+                return coins
+            end
+        end
+    end
+
+    return tonumber(pd.Coins)
+end
+
+local function getCurrentCoins()
+    local inventory = tryGetInventoryCoins()
+    if inventory ~= nil then
+        return inventory
+    end
+    return CoinStallState.collected
+end
+
 local function onCoinCollected(_coinType, current, max)
+    CoinStallState.collected += 1
+
     current, max = tonumber(current), tonumber(max)
     if current then
         BagState.bagCurrent = current
@@ -203,6 +247,42 @@ local function startPlayerMonitor()
         while not destroyed do
             safe(checkLowPlayers)
             task.wait(interval)
+        end
+    end))
+end
+
+--══════════════════════════════════ COIN STALL ═══════════════════════════════
+
+local function checkCoinStall()
+    if destroyed or HopState.hopping then
+        return
+    end
+
+    local interval = math.max(tonumber(Config.CoinStallHopSeconds) or 160, 30)
+    local current = getCurrentCoins()
+    local start = CoinStallState.windowStart
+
+    if current <= start then
+        log(string.format(
+            "Coin không tăng / coin stall (%d -> %d trong %ds) — hop",
+            start,
+            current,
+            interval
+        ))
+        runServerHop(string.format("coin stall (%d->%d)", start, current))
+    else
+        CoinStallState.windowStart = current
+    end
+end
+
+local function startCoinStallMonitor()
+    local interval = math.max(tonumber(Config.CoinStallHopSeconds) or 160, 30)
+    trackThread("coinStallMonitor", task.spawn(function()
+        task.wait(3)
+        CoinStallState.windowStart = getCurrentCoins()
+        while not destroyed do
+            task.wait(interval)
+            safe(checkCoinStall)
         end
     end))
 end
@@ -292,6 +372,9 @@ function MM2Hop.GetState()
         bagCurrent = BagState.bagCurrent,
         bagMax = BagState.bagMax,
         bagWasFull = BagState.bagWasFull,
+        coinStallStart = CoinStallState.windowStart,
+        coinStallCurrent = getCurrentCoins(),
+        coinStallCollected = CoinStallState.collected,
     }
 end
 
@@ -300,12 +383,14 @@ G.MM2Hop = MM2Hop
 --══════════════════════════════════ BOOT ════════════════════════════════════
 
 log(string.format(
-    "Khởi động — check=%ds, hop khi <= %d player, bagFail=%d (server đông hơn %d thì KHÔNG hop)",
+    "Khởi động — check=%ds, hop khi <= %d player, bagFail=%d, coinStall=%ds (server đông hơn %d thì KHÔNG hop)",
     tonumber(Config.CheckIntervalSec) or 180,
     tonumber(Config.LowPlayerMax) or 2,
     tonumber(Config.BagFailHopThreshold) or 6,
+    tonumber(Config.CoinStallHopSeconds) or 160,
     tonumber(Config.LowPlayerMax) or 2
 ))
 
 connectRemotes()
 startPlayerMonitor()
+startCoinStallMonitor()
