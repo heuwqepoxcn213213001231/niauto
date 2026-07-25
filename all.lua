@@ -21,4 +21,4 @@ G.NiAutoConfig.UserId = G.NiAutoConfig.UserId or ""
 G.NiAutoConfig.ITEMS_RARITY_TO_NOTIFY = G.NiAutoConfig.ITEMS_RARITY_TO_NOTIFY or { "Godly", "Legendary", "Rare" }
 
 load("https://raw.githubusercontent.com/shuys1230sxmcsweiqpxcv/Evomon/refs/heads/main/notify.lua")
-load("https://raw.githubusercontent.com/shuys1230sxmcsweiqpxcv/Evomon/refs/heads/main/hopfast.lua")
+load("https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/hop.lua")
