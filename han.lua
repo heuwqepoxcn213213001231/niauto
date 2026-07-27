@@ -102,6 +102,7 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         AccountOpsAutoswapOnDailyComplete = true,
         AccountOpsAutoswapOption = 2,
         AccountOpsAutoswapGodlyOption = 3,
+        AccountOpsAutoswapMinLevel = 10,
         AccountOpsAutoswapIntervalSeconds = 60,
         DiscordWebhookGodly = "",
         DiscordWebhookGodlyEnabled = true,
@@ -2558,6 +2559,7 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         _godlyScanStamp = nil,
         _profileSignalsConnected = false,
         _sync = nil,
+        _levelModule = nil,
     }
 
     local DAILY_COMPLETE_PROGRESS = 960
@@ -2611,6 +2613,21 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         if ok then
             Summer2026._sync = sync
             return sync
+        end
+    end
+
+    local function summerGetLevelModule()
+        if Summer2026._levelModule then
+            return Summer2026._levelModule
+        end
+        local ok, mod = pcall(function()
+            local modules = ReplicatedStorage:FindFirstChild("Modules")
+            modules = modules and modules:FindFirstChild("LevelModule")
+            return modules and require(modules)
+        end)
+        if ok and type(mod) == "table" then
+            Summer2026._levelModule = mod
+            return mod
         end
     end
 
@@ -3108,6 +3125,28 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
     function K:AccountOpsGetShellSwapThreshold()
         return tonumber(Config.AccountOpsAutoswapMaxShells) or 120
     end
+
+    function K:AccountOpsGetMinAutoswapLevel()
+        return tonumber(Config.AccountOpsAutoswapMinLevel) or 10
+    end
+
+    function K:GetPlayerLevel()
+        local pd = summerGetProfile(self)
+        if type(pd) ~= "table" or pd.NewXP == nil then
+            return 0
+        end
+        local levelMod = summerGetLevelModule()
+        if not levelMod or type(levelMod.GetLevel) ~= "function" then
+            return 0
+        end
+        local ok, level = pcall(function()
+            return levelMod.GetLevel(pd.NewXP)
+        end)
+        if not ok then
+            return 0
+        end
+        return tonumber(level) or 0
+    end
     
     function K:Summer2026GetQuestTiers(trackId)
         local cfg = Summer2026._questsConfig
@@ -3408,6 +3447,9 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         if summerGetDailyProgress(self) < DAILY_COMPLETE_PROGRESS then
             return false
         end
+        if self:GetPlayerLevel() < self:AccountOpsGetMinAutoswapLevel() then
+            return false
+        end
         local maxShells = self:AccountOpsGetShellSwapThreshold()
         return self:Summer2026GetShells() < maxShells
     end
@@ -3486,6 +3528,8 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             swapStr = "wait next | off"
         elseif not dailyDone then
             swapStr = "wait next | need daily"
+        elseif self:GetPlayerLevel() < self:AccountOpsGetMinAutoswapLevel() then
+            swapStr = string.format("wait next | need lv %d", self:AccountOpsGetMinAutoswapLevel())
         elseif self:Summer2026GetShells() >= self:AccountOpsGetShellSwapThreshold() then
             swapStr = string.format("wait next | shells>=%d", self:AccountOpsGetShellSwapThreshold())
         else
