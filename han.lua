@@ -95,6 +95,12 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         Summer2026BoxId = "Summer2026Box",
         Summer2026ClaimBattlePass = true,
         Summer2026AutoUnbox = true,
+        EnableCoinBoxAutoUnbox = true,
+        CoinBoxId = "MysteryBox2",
+        CoinBoxCurrency = "Coins",
+        CoinBoxCategory = "MysteryBox",
+        CoinBoxMinCoins = 0,
+        CoinBoxReserveCoins = 0,
         AccountOpsAutoswapMaxShells = 120,
         AccountOpsBaseUrl = "https://accountops.org",
         AccountOpsApiKey = "",         
@@ -2551,6 +2557,9 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         _eventInfo = nil,
         _questsConfig = nil,
         _boxPrice = nil,
+        _coinBoxPrice = nil,
+        _summerOpenBusy = false,
+        _coinBoxOpenBusy = false,
         _dailyProgress = nil,
         _dailyTrackId = nil,
         _dailyPollAt = nil,
@@ -2574,6 +2583,10 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
     
     local function summerPrint(msg)
         print("[S26] " .. tostring(msg))
+    end
+
+    local function cratePrint(msg)
+        print("[Crate] " .. tostring(msg))
     end
 
     local function accountOpsHttpRequest(opts)
@@ -3044,6 +3057,19 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         })
         return accountOpsHttpOk(resp), resp
     end
+
+    function K:ShopRemotesResolve()
+        if Summer2026._shopRemotes then
+            return true
+        end
+        local shop = ReplicatedStorage:FindFirstChild("Remotes")
+        shop = shop and shop:FindFirstChild("Shop")
+        if not shop or not shop:FindFirstChild("OpenCrate") then
+            return false
+        end
+        Summer2026._shopRemotes = shop
+        return true
+    end
     
     function K:Summer2026Resolve()
         if Summer2026._ready then
@@ -3283,6 +3309,43 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
     
         return claimed
     end
+
+    local function shopOpenCrate(shop, boxId, category, currency)
+        local openCrate = shop:FindFirstChild("OpenCrate")
+        local crateComplete = shop:FindFirstChild("CrateComplete")
+        if not openCrate or not openCrate:IsA("RemoteFunction") then
+            return false
+        end
+
+        local rewardId
+        local okOpen = pcall(function()
+            rewardId = openCrate:InvokeServer(boxId, category, currency)
+        end)
+        if not okOpen or not rewardId then
+            return false
+        end
+
+        if crateComplete and crateComplete:IsA("RemoteEvent") then
+            pcall(function()
+                crateComplete:FireServer(rewardId)
+            end)
+        end
+
+        return true, rewardId
+    end
+
+    local function handleCrateGodlyReward(rewardId, boxId, logFn)
+        local rewardItem = summerResolveRewardItem(rewardId)
+        if rewardItem and summerIsGodlyRarity(rewardItem.rarity) then
+            Summer2026._hasGodly = true
+            logFn(string.format(
+                "Godly unboxed (%s) — autoswap will use option %d",
+                tostring(rewardItem.name or rewardItem.id),
+                tonumber(Config.AccountOpsAutoswapGodlyOption) or 3
+            ))
+            summerSendGodlyWebhook(rewardItem, boxId)
+        end
+    end
     
     function K:Summer2026BuyAndOpenBox()
         if not Config.Summer2026AutoUnbox or not self:Summer2026Resolve() then
@@ -3296,21 +3359,13 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         end
     
         local shop = Summer2026._shopRemotes
-        local openCrate = shop:FindFirstChild("OpenCrate")
-        local crateComplete = shop:FindFirstChild("CrateComplete")
-        if not openCrate or not openCrate:IsA("RemoteFunction") then
-            return false
-        end
-    
-        local rewardId
-        local okOpen = pcall(function()
-            rewardId = openCrate:InvokeServer(
-                Config.Summer2026BoxId,
-                "MysteryBox",
-                Config.Summer2026KeyCurrency
-            )
-        end)
-        if not okOpen or not rewardId then
+        local okOpen, rewardId = shopOpenCrate(
+            shop,
+            Config.Summer2026BoxId,
+            "MysteryBox",
+            Config.Summer2026KeyCurrency
+        )
+        if not okOpen then
             summerPrint("OpenCrate failed for " .. Config.Summer2026BoxId)
             return false
         end
@@ -3321,24 +3376,74 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             price,
             tostring(rewardId)
         ))
-    
-        if crateComplete and crateComplete:IsA("RemoteEvent") then
-            pcall(function()
-                crateComplete:FireServer(rewardId)
+
+        handleCrateGodlyReward(rewardId, Config.Summer2026BoxId, summerPrint)
+        return true
+    end
+
+    function K:CoinBoxGetPrice()
+        if Config.CoinBoxMinCoins and Config.CoinBoxMinCoins > 0 then
+            return Config.CoinBoxMinCoins
+        end
+        if not Summer2026._coinBoxPrice then
+            safe(function()
+                local sync = summerGetSync()
+                local entry = sync and sync.NewShop[Config.CoinBoxId]
+                if entry and entry.Price then
+                    Summer2026._coinBoxPrice = entry.Price[Config.CoinBoxCurrency]
+                        or entry.Price.Coins
+                end
             end)
         end
+        return Summer2026._coinBoxPrice or 1000
+    end
 
-        local rewardItem = summerResolveRewardItem(rewardId)
-        if rewardItem and summerIsGodlyRarity(rewardItem.rarity) then
-            Summer2026._hasGodly = true
-            summerPrint(string.format(
-                "Godly unboxed (%s) — autoswap will use option %d",
-                tostring(rewardItem.name or rewardItem.id),
-                tonumber(Config.AccountOpsAutoswapGodlyOption) or 3
-            ))
-            summerSendGodlyWebhook(rewardItem, Config.Summer2026BoxId)
+    function K:CoinBoxBuyAndOpen()
+        if not Config.EnableCoinBoxAutoUnbox or not self:ShopRemotesResolve() then
+            return false
         end
+
+        local price = self:CoinBoxGetPrice()
+        local reserve = tonumber(Config.CoinBoxReserveCoins) or 0
+        local coins = self:GetInventoryCoins()
+        if coins < price + reserve then
+            return false
+        end
+
+        local shop = Summer2026._shopRemotes
+        local okOpen, rewardId = shopOpenCrate(
+            shop,
+            Config.CoinBoxId,
+            Config.CoinBoxCategory or "MysteryBox",
+            Config.CoinBoxCurrency or "Coins"
+        )
+        if not okOpen then
+            cratePrint("OpenCrate failed for " .. tostring(Config.CoinBoxId))
+            return false
+        end
+
+        cratePrint(string.format(
+            "opened %s (-%d coins, reward=%s)",
+            Config.CoinBoxId,
+            price,
+            tostring(rewardId)
+        ))
+
+        handleCrateGodlyReward(rewardId, Config.CoinBoxId, cratePrint)
         return true
+    end
+
+    local function spawnParallelCrateOpen(self, fn, busyKey)
+        if Summer2026[busyKey] then
+            return
+        end
+        Summer2026[busyKey] = true
+        task.spawn(function()
+            safe(function()
+                fn(self)
+            end)
+            Summer2026[busyKey] = false
+        end)
     end
 
     function K:ConnectSummer2026ProfileSignals()
@@ -3704,12 +3809,15 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
 
         local needSummer = Config.EnableSummer2026
         local needAccountOps = Config.AccountOpsAutoswapOnDailyComplete
-        if not needSummer and not needAccountOps then
+        local needCoinBox = Config.EnableCoinBoxAutoUnbox
+        if not needSummer and not needAccountOps and not needCoinBox then
             return
         end
 
         if needSummer or needAccountOps then
             self:Summer2026Resolve()
+        elseif needCoinBox then
+            self:ShopRemotesResolve()
         end
 
         if needSummer then
@@ -3722,7 +3830,11 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
 
         local dailyComplete = summerGetDailyProgress(self) >= DAILY_COMPLETE_PROGRESS
         if needSummer or (needAccountOps and dailyComplete) then
-            self:Summer2026BuyAndOpenBox()
+            spawnParallelCrateOpen(self, K.Summer2026BuyAndOpenBox, "_summerOpenBusy")
+        end
+
+        if Config.EnableCoinBoxAutoUnbox then
+            spawnParallelCrateOpen(self, K.CoinBoxBuyAndOpen, "_coinBoxOpenBusy")
         end
 
         if needAccountOps then
@@ -3732,7 +3844,8 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
     
     function K:StartSummer2026()
         if not Config.EnableSummer2026
-            and not Config.AccountOpsAutoswapOnDailyComplete then
+            and not Config.AccountOpsAutoswapOnDailyComplete
+            and not Config.EnableCoinBoxAutoUnbox then
             return
         end
         self._maid:Give("summer2026Loop", task.spawn(function()
