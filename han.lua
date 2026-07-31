@@ -101,6 +101,7 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
         CoinBoxCategory = "MysteryBox",
         CoinBoxMinCoins = 0,
         CoinBoxReserveCoins = 0,
+        CoinBoxOpenDelay = 1,
         AccountOpsAutoswapMaxShells = 120,
         AccountOpsBaseUrl = "https://accountops.org",
         AccountOpsApiKey = "",         
@@ -3809,16 +3810,11 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
 
         local needSummer = Config.EnableSummer2026
         local needAccountOps = Config.AccountOpsAutoswapOnDailyComplete
-        local needCoinBox = Config.EnableCoinBoxAutoUnbox
-        if not needSummer and not needAccountOps and not needCoinBox then
+        if not needSummer and not needAccountOps then
             return
         end
 
-        if needSummer or needAccountOps then
-            self:Summer2026Resolve()
-        elseif needCoinBox then
-            self:ShopRemotesResolve()
-        end
+        self:Summer2026Resolve()
 
         if needSummer then
             local questClaims = self:Summer2026ClaimQuests()
@@ -3833,10 +3829,6 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             spawnParallelCrateOpen(self, K.Summer2026BuyAndOpenBox, "_summerOpenBusy")
         end
 
-        if Config.EnableCoinBoxAutoUnbox then
-            spawnParallelCrateOpen(self, K.CoinBoxBuyAndOpen, "_coinBoxOpenBusy")
-        end
-
         if needAccountOps then
             self:AccountOpsTagOnDailyComplete()
         end
@@ -3844,8 +3836,7 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
     
     function K:StartSummer2026()
         if not Config.EnableSummer2026
-            and not Config.AccountOpsAutoswapOnDailyComplete
-            and not Config.EnableCoinBoxAutoUnbox then
+            and not Config.AccountOpsAutoswapOnDailyComplete then
             return
         end
         self._maid:Give("summer2026Loop", task.spawn(function()
@@ -3855,6 +3846,28 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
                     self:Summer2026Tick()
                 end)
                 task.wait(math.max(5, Config.Summer2026Interval or 15))
+            end
+        end))
+    end
+
+    function K:StartCoinBox()
+        if not Config.EnableCoinBoxAutoUnbox then
+            return
+        end
+        self._maid:Give("coinBoxLoop", task.spawn(function()
+            task.wait(5)
+            local delaySec = math.max(0.1, tonumber(Config.CoinBoxOpenDelay) or 1)
+            while not self.Destroyed and Config.EnableCoinBoxAutoUnbox do
+                if Summer2026._coinBoxOpenBusy then
+                    task.wait(0.1)
+                else
+                    Summer2026._coinBoxOpenBusy = true
+                    safe(function()
+                        self:CoinBoxBuyAndOpen()
+                    end)
+                    Summer2026._coinBoxOpenBusy = false
+                    task.wait(delaySec)
+                end
             end
         end))
     end
@@ -3913,6 +3926,7 @@ local G = (type(getgenv) == "function" and getgenv()) or _G
             end
             K:SyncMidRound()
             K:StartSummer2026()
+            K:StartCoinBox()
             log("Ready — phase=" .. K.Phase)
         end))
     end
