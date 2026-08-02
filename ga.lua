@@ -9,16 +9,29 @@ do
 		player = Players.PlayerAdded:Wait()
 	end
 
+	-- Skip Loading (default on): short timeouts only — do not block farm boot on currency/assets.
+	-- Mirrored by Config["Skip Loading"]; remotes + PlotId are the real readiness gate later.
+	local SKIP_LOADING = true
+	local bootDeadline = tick() + (SKIP_LOADING and 6 or 45)
 	local leaderstats
 	repeat
 		leaderstats = player:FindFirstChild("leaderstats")
-		task.wait(0.2)
-	until leaderstats
+		if leaderstats then
+			break
+		end
+		task.wait(0.1)
+	until tick() >= bootDeadline
 
-	-- Wait until currency exists (game ready). No Leaves-based tier pick.
-	repeat
-		task.wait(0.2)
-	until leaderstats:FindFirstChild("Leaves") or leaderstats:FindFirstChild("Sheckles")
+	-- Currency child is optional under Skip Loading (config is not Leaves-tiered anymore).
+	if leaderstats and not SKIP_LOADING then
+		local curDeadline = tick() + 20
+		repeat
+			if leaderstats:FindFirstChild("Leaves") or leaderstats:FindFirstChild("Sheckles") then
+				break
+			end
+			task.wait(0.15)
+		until tick() >= curDeadline
+	end
 
 	-- Items To Mail.Gear = source of truth: never auto-use / equip mail-bound gears.
 	local function filterGearsToUse(config)
@@ -78,11 +91,59 @@ do
 	end
 
 	local function applyConfig(fpsCap, note, config)
-		pcall(function()
-			local userSettings = UserSettings():GetService("UserGameSettings")
-			userSettings.SavedQualityLevel = 1
-			userSettings.MasterVolume = 0
-		end)
+		-- ASAP graphics floor + headless 3D (before Opt wait/nuke loops).
+		-- Prefer PREVENT render cost; strip/nuke runs later in Opt.Run.
+		local applied = {}
+		if config["EnableFPSOpt"] ~= false then
+			if config["Disable 3D Render"] ~= false then
+				local ok = pcall(function()
+					game:GetService("RunService"):Set3dRenderingEnabled(false)
+				end)
+				if ok then
+					applied[#applied + 1] = "Set3dRenderingEnabled(false)"
+				end
+			end
+			if config["Graphics Floor"] ~= false then
+				pcall(function()
+					local ugs = UserSettings():GetService("UserGameSettings")
+					ugs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+					ugs.MasterVolume = 0
+				end)
+				pcall(function()
+					settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+				end)
+				pcall(function()
+					local Lighting = game:GetService("Lighting")
+					Lighting.GlobalShadows = false
+					Lighting.Brightness = 0
+					pcall(function()
+						Lighting.Technology = Enum.Technology.Compatibility
+					end)
+					for _, child in ipairs(Lighting:GetChildren()) do
+						pcall(function()
+							child:Destroy()
+						end)
+					end
+				end)
+				applied[#applied + 1] = "GraphicsFloor(QualityLevel01+Lighting)"
+			end
+			-- Max CPU Opt ASAP: CoreGui off + mute (full ApplyMaxCpu runs in Opt.Run).
+			local maxCpu = config["Max CPU Opt"] ~= false
+			if maxCpu and config["Disable CoreGui"] ~= false then
+				pcall(function()
+					game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+				end)
+				applied[#applied + 1] = "CoreGuiAll=false"
+			end
+			if config["MuteSounds"] ~= false then
+				pcall(function()
+					game:GetService("SoundService").Volume = 0
+				end)
+			end
+		end
+		if #applied > 0 then
+			warn("[FH-Opt] boot-early applied:", table.concat(applied, ", "))
+		end
 
 		if typeof(setfpscap) == "function" then
 			setfpscap(fpsCap)
@@ -105,11 +166,28 @@ do
 		["World"] = "Fall Harvest",
 
 		-- FPS / map opt (MM2-style, farm-safe) — inlined Opt module + README
+		-- Prefer PREVENT render/load cost (3D off + quality floor) over destroy-after-load.
+		-- Honest limit: Lua cannot fully block Roblox CDN mesh downloads for all assets;
+		-- Set3dRenderingEnabled + QualityLevel + strip is the real CPU/GPU win. Remotes still work.
 		["EnableFPSOpt"] = true,
-		["ClearMap"] = true,
+		["Disable 3D Render"] = true, -- RunService:Set3dRenderingEnabled(false) ASAP; headless farm
+		["Graphics Floor"] = true, -- QualityLevel01 + UserGameSettings + Lighting Compatibility/no postFX
+		["Reduce Simulation"] = true, -- Streaming radii, Physics throttle, Interpolate, Debris, particles Rate=0
+		["ClearMap"] = true, -- nuke/strip AFTER render disable (DescendantAdded stripper stays)
 		["ClearOtherGardens"] = true,
 		["HideOtherPlayers"] = true,
 		["MuteSounds"] = true,
+		-- Max CPU Opt bundles aggressive farm-safe knobs (unset sub-keys inherit this).
+		-- Does NOT regress ClearMap/nuke/FH_AntiVoid. EquipTool via Humanoid (Backpack CoreGui off).
+		["Max CPU Opt"] = true,
+		["Disable CoreGui"] = true, -- Chat/PlayerList/Emotes/Health/Backpack UI off (tools still EquipTool)
+		["Lock Camera"] = true, -- Scriptable cam + kill PlayerModule camera scripts
+		["Min Simulation Radius"] = true, -- setsimulationradius/sethiddenproperty → 0 (own plot kept via streaming)
+		["Strip Character"] = true, -- no shadows/Animate/clothing meshes; keep HRP/Humanoid/Tools
+		["Reassert Render"] = true, -- re-Set3dRenderingEnabled every few seconds (client may flip it back)
+		-- Skip nonessential load waits (game.Loaded / currency / long plot poll). Remotes+plot gate boot.
+		-- Watering: EquipTool + Fire UseWateringCan without mesh/texture/appearance waits (headless-safe).
+		["Skip Loading"] = true,
 
 		["Auto Double Or Nothing"] = false,
 		["Double Or Nothing Target Wins"] = 1,
@@ -126,16 +204,13 @@ do
 		["Sell Multiplier Min"] = 1.01,
 		["Sell Multiplier Wait"] = 60,
 		["Sell Force When Full"] = 35,
-		-- Per-fruit hold until max(GlobalMultiplier, PriceMultipliers[fruit]) >= need.
-		-- "Mushroom" also matches Fall Harvest "Maple Mushroom" via SeedData.ReskinOf.
-		-- Uses SetFruitFavorite so SellAll never dumps held crops early; SellFruit as fallback.
 		["Sell Fruit Multiplier"] = {
 			["Mushroom"] = 2,
 			["Maple Mushroom"] = 2,
 			["Atlantic Giant Pumpkin"] = 2,
 		},
 		-- Max seconds to hold listed fruits before force-sell (broke / softlock). Default 5m.
-		["Sell Multiplier Max Wait"] = 300,
+		["Sell Multiplier Max Wait"] = 30000,
 		-- Leaves at/below this → skip multi wait, sell immediately, block unaffordable buys
 		["Sell Force When Broke"] = 1000,
 		-- Platform under feet prevents void; rescue TP only if Y falls catastrophically below this
@@ -149,7 +224,7 @@ do
 		["Anti Stuck"] = true,
 		["Anti Stuck Seconds"] = 45,
 		["Gear Cooldown"] = 8,
-		-- Only water/sprinkle plants still growing (Age < MaxAge / growing fruits); skip harvest-ready.
+		-- Only water/sprinkle plants still on Growing List (Age < MaxAge). GrowsForever fruit regen ≠ NO-OP.
 		["Gear Only Growing"] = true,
 		-- Prefer expensive seeds (SeedData PurchasePrice) when aiming can / placing sprinkler.
 		["Gear Prefer Expensive"] = true,
@@ -1007,6 +1082,9 @@ do
 	local Lighting = game:GetService("Lighting")
 	local SoundService = game:GetService("SoundService")
 	local MaterialService = game:GetService("MaterialService")
+	local RunService = game:GetService("RunService")
+	local Debris = game:GetService("Debris")
+	local StarterGui = game:GetService("StarterGui")
 
 	Opt = {}
 
@@ -1111,6 +1189,15 @@ do
 			return default
 		end
 		return v == true
+	end
+
+	-- Max CPU Opt bundle: explicit key wins; else inherit Max CPU Opt (default true).
+	local function cpuKnob(config, key)
+		local v = config[key]
+		if v ~= nil then
+			return v == true
+		end
+		return cfgBool(config, "Max CPU Opt", true)
 	end
 
 	local function getOwnPlotId(player)
@@ -1462,83 +1549,440 @@ do
 		stripFxAndLights(folder, 400)
 	end
 
+	-- Returns list of applied knobs (for boot log). Safe to call ASAP before nuke loops.
 	function Opt.ApplyRendering(config)
+		local applied = {}
 		if not cfgBool(config, "EnableFPSOpt", true) then
-			return
+			log("ApplyRendering skipped — EnableFPSOpt=false")
+			return applied
 		end
-		safe(function()
-			local ugs = UserSettings():GetService("UserGameSettings")
-			ugs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
-			ugs.MasterVolume = 0
-		end)
-		safe(function()
-			settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
-		end)
-		safe(function()
-			local ren = settings().Rendering
-			if ren.MeshPartDetailLevel ~= nil then
-				ren.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01
+
+		-- 1) Kill 3D render pipeline first (huge CPU/GPU win; remotes/farm still work).
+		if cfgBool(config, "Disable 3D Render", true) then
+			local ok = pcall(function()
+				RunService:Set3dRenderingEnabled(false)
+			end)
+			if ok then
+				applied[#applied + 1] = "Set3dRenderingEnabled(false)"
+			else
+				log("Set3dRenderingEnabled failed (executor/API?)")
 			end
-			pcall(function()
-				ren.EditQualityLevel = Enum.QualityLevel.Level01
-			end)
-			pcall(function()
-				ren.EagerBulkExecution = false
-			end)
-		end)
-		safe(function()
-			Lighting.GlobalShadows = false
-			Lighting.Brightness = 0
-			Lighting.FogEnd = 0
-			Lighting.FogStart = 0
-			Lighting.FogColor = Color3.new(0, 0, 0)
-			Lighting.EnvironmentDiffuseScale = 0
-			Lighting.EnvironmentSpecularScale = 0
-			Lighting.ClockTime = 12
-			Lighting.GeographicLatitude = 0
-			pcall(function()
-				Lighting.Ambient = Color3.new(0, 0, 0)
-				Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
-				Lighting.ShadowSoftness = 0
-				Lighting.ExposureCompensation = -2
-			end)
-			for _, child in ipairs(Lighting:GetChildren()) do
-				destroyInst(child)
-			end
-		end)
-		safe(function()
-			local terrain = workspace:FindFirstChildOfClass("Terrain")
-			if terrain then
-				terrain.Decoration = false
-				terrain.WaterWaveSize = 0
-				terrain.WaterWaveSpeed = 0
-				terrain.WaterReflectance = 0
-				terrain.WaterTransparency = 1
+		end
+
+		-- 2) Graphics floor (prevents high-quality mesh/LOD/postFX work).
+		if cfgBool(config, "Graphics Floor", true) then
+			local okUgs = pcall(function()
+				local ugs = UserSettings():GetService("UserGameSettings")
+				ugs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+				ugs.MasterVolume = 0
 				pcall(function()
-					terrain.WaterColor = Color3.new(0, 0, 0)
+					ugs.Fullscreen = false
 				end)
-			end
-		end)
-		safe(function()
-			if MaterialService then
-				MaterialService.Use2022Materials = false
-			end
-		end)
-		safe(function()
-			-- client may not write Streaming*; best-effort shrink
-			pcall(function()
-				workspace.StreamingMinRadius = 64
-				workspace.StreamingTargetRadius = 64
 			end)
-		end)
+			if okUgs then
+				applied[#applied + 1] = "UserGameSettings(QualityLevel1,MasterVolume=0)"
+			end
+
+			local okQl = pcall(function()
+				settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+			end)
+			if okQl then
+				applied[#applied + 1] = "Rendering.QualityLevel=Level01"
+			end
+
+			safe(function()
+				local ren = settings().Rendering
+				if ren.MeshPartDetailLevel ~= nil then
+					ren.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01
+					applied[#applied + 1] = "MeshPartDetailLevel=Level01"
+				end
+				pcall(function()
+					ren.EditQualityLevel = Enum.QualityLevel.Level01
+				end)
+				pcall(function()
+					ren.EagerBulkExecution = false
+				end)
+			end)
+
+			local okLit = pcall(function()
+				Lighting.GlobalShadows = false
+				Lighting.Brightness = 0
+				Lighting.FogEnd = 0
+				Lighting.FogStart = 0
+				Lighting.FogColor = Color3.new(0, 0, 0)
+				Lighting.EnvironmentDiffuseScale = 0
+				Lighting.EnvironmentSpecularScale = 0
+				Lighting.ClockTime = 12
+				Lighting.GeographicLatitude = 0
+				pcall(function()
+					Lighting.Technology = Enum.Technology.Compatibility
+				end)
+				pcall(function()
+					Lighting.Ambient = Color3.new(0, 0, 0)
+					Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
+					Lighting.ShadowSoftness = 0
+					Lighting.ExposureCompensation = -2
+				end)
+				for _, child in ipairs(Lighting:GetChildren()) do
+					destroyInst(child)
+				end
+			end)
+			if okLit then
+				applied[#applied + 1] = "Lighting(Compatibility,noShadows,Brightness0,postFX cleared)"
+			end
+
+			safe(function()
+				local terrain = workspace:FindFirstChildOfClass("Terrain")
+				if terrain then
+					terrain.Decoration = false
+					terrain.WaterWaveSize = 0
+					terrain.WaterWaveSpeed = 0
+					terrain.WaterReflectance = 0
+					terrain.WaterTransparency = 1
+					pcall(function()
+						terrain.WaterColor = Color3.new(0, 0, 0)
+					end)
+					applied[#applied + 1] = "Terrain(Decoration=false)"
+				end
+			end)
+
+			safe(function()
+				if MaterialService then
+					MaterialService.Use2022Materials = false
+					applied[#applied + 1] = "MaterialService.Use2022Materials=false"
+				end
+			end)
+		end
+
+		-- 3) Simulation / stream cost (best-effort; many props are client-read-only).
+		if cfgBool(config, "Reduce Simulation", true) then
+			-- Shrink radii only; do NOT force StreamingEnabled (place may not use streaming).
+			-- Keep 64 — lower risks unloading SeedPackSpawnServerLocations / wild-pet parts.
+			local okStream = pcall(function()
+				if workspace.StreamingEnabled then
+					workspace.StreamingMinRadius = 64
+					workspace.StreamingTargetRadius = 64
+				end
+			end)
+			if okStream and workspace.StreamingEnabled then
+				applied[#applied + 1] = "StreamingRadius=64"
+			end
+
+			local okInterp = pcall(function()
+				workspace.InterpolationThrottling = Enum.InterpolationThrottlingMode.Enabled
+			end)
+			if okInterp then
+				applied[#applied + 1] = "InterpolationThrottling=Enabled"
+			end
+
+			-- PhysicsSteppingMethod / SignalBehavior (client-writable on some builds).
+			local okStep = pcall(function()
+				if workspace.PhysicsSteppingMethod ~= nil then
+					workspace.PhysicsSteppingMethod = Enum.PhysicsSteppingMethod.Adaptive
+				end
+			end)
+			if okStep then
+				applied[#applied + 1] = "PhysicsSteppingMethod=Adaptive"
+			end
+			local okSig = pcall(function()
+				if workspace.SignalBehavior ~= nil then
+					workspace.SignalBehavior = Enum.SignalBehavior.Deferred
+				end
+			end)
+			if okSig then
+				applied[#applied + 1] = "SignalBehavior=Deferred"
+			end
+
+			local okPhys = pcall(function()
+				local phys = settings().Physics
+				phys.AllowSleep = true
+				pcall(function()
+					phys.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Skip
+				end)
+				pcall(function()
+					phys.ThrottleAdjustTime = 0.5
+				end)
+			end)
+			if okPhys then
+				applied[#applied + 1] = "Physics(AllowSleep+EnvThrottle)"
+			end
+
+			local debrisTrimmed = false
+			pcall(function()
+				-- Some executors expose MaxItems; stock Roblox Debris has no such knob.
+				if typeof(Debris.MaxItems) == "number" then
+					Debris.MaxItems = 0
+					debrisTrimmed = true
+				end
+			end)
+			if debrisTrimmed then
+				applied[#applied + 1] = "Debris.MaxItems=0"
+			end
+
+			local particleN = 0
+			safe(function()
+				for _, d in ipairs(workspace:GetDescendants()) do
+					if d:IsA("ParticleEmitter") then
+						pcall(function()
+							d.Rate = 0
+							d.Enabled = false
+							d.Lifetime = NumberSequence.new(0)
+						end)
+						particleN += 1
+					elseif d:IsA("Trail") or d:IsA("Beam") then
+						pcall(function()
+							d.Enabled = false
+						end)
+						particleN += 1
+					end
+				end
+			end)
+			if particleN > 0 then
+				applied[#applied + 1] = string.format("Particles/Trails muted=%d", particleN)
+			end
+		end
+
 		local cap = config["FPS Cap"]
 		if typeof(cap) == "number" then
 			if typeof(setfpscap) == "function" then
 				setfpscap(cap)
+				applied[#applied + 1] = "setfpscap=" .. tostring(cap)
 			elseif typeof(set_fps_cap) == "function" then
 				set_fps_cap(cap)
+				applied[#applied + 1] = "set_fps_cap=" .. tostring(cap)
 			end
 		end
+
+		if #applied > 0 then
+			log("ApplyRendering:", table.concat(applied, " | "))
+		else
+			log("ApplyRendering: nothing applied")
+		end
+		return applied
+	end
+
+	-- CoreGui off — EquipTool via Humanoid does not need Backpack UI.
+	function Opt.DisableCoreGui(config)
+		if not (cfgBool(config, "EnableFPSOpt", true) and cpuKnob(config, "Disable CoreGui")) then
+			return {}
+		end
+		local applied = {}
+		local types = {
+			"All",
+			"Chat",
+			"PlayerList",
+			"EmotesMenu",
+			"Health",
+			"Backpack",
+			"Captures",
+			"SelfView",
+		}
+		for _, name in ipairs(types) do
+			local ok = pcall(function()
+				local eg = Enum.CoreGuiType[name]
+				if eg then
+					StarterGui:SetCoreGuiEnabled(eg, false)
+				end
+			end)
+			if ok then
+				applied[#applied + 1] = name
+			end
+		end
+		if #applied > 0 then
+			log("DisableCoreGui:", table.concat(applied, ","))
+		end
+		return applied
+	end
+
+	-- Scriptable camera + kill default PlayerModule camera/control LocalScripts (TP farm).
+	function Opt.LockCamera(config, localPlayer)
+		if not (cfgBool(config, "EnableFPSOpt", true) and cpuKnob(config, "Lock Camera")) then
+			return {}
+		end
+		local applied = {}
+		local lp = localPlayer or Players.LocalPlayer
+		if lp then
+			safe(function()
+				lp.CameraMaxZoomDistance = 0.5
+				lp.CameraMinZoomDistance = 0.5
+				lp.CameraMode = Enum.CameraMode.LockFirstPerson
+				applied[#applied + 1] = "CameraZoom/Mode"
+			end)
+			local ps = lp:FindFirstChild("PlayerScripts")
+			if ps then
+				for _, name in ipairs({ "PlayerModule", "CameraScript", "ControlScript", "RbxCharacterSounds" }) do
+					local mod = ps:FindFirstChild(name)
+					if mod then
+						if destroyInst(mod) > 0 then
+							applied[#applied + 1] = "destroy:" .. name
+						end
+					end
+				end
+				-- Any leftover LocalScripts under PlayerScripts that drive camera/input.
+				safe(function()
+					for _, d in ipairs(ps:GetDescendants()) do
+						if d:IsA("LocalScript") and (d.Name:find("Camera", 1, true) or d.Name:find("Control", 1, true)) then
+							destroyInst(d)
+						end
+					end
+				end)
+			end
+		end
+		safe(function()
+			local cam = workspace.CurrentCamera
+			if cam then
+				cam.CameraType = Enum.CameraType.Scriptable
+				cam.FieldOfView = 1
+				cam.CameraSubject = nil
+				applied[#applied + 1] = "CameraType=Scriptable,FOV=1"
+			end
+		end)
+		if #applied > 0 then
+			log("LockCamera:", table.concat(applied, " | "))
+		end
+		return applied
+	end
+
+	-- Other-player physics radius → 0 (executor APIs). Own plot uses streaming/attrs, not this.
+	function Opt.MinSimRadius(config, localPlayer)
+		if not (cfgBool(config, "EnableFPSOpt", true) and cpuKnob(config, "Min Simulation Radius")) then
+			return {}
+		end
+		local applied = {}
+		local lp = localPlayer or Players.LocalPlayer
+		if typeof(setsimulationradius) == "function" then
+			local ok = pcall(function()
+				setsimulationradius(0, 0)
+			end)
+			if not ok then
+				ok = pcall(function()
+					setsimulationradius(0)
+				end)
+			end
+			if ok then
+				applied[#applied + 1] = "setsimulationradius(0)"
+			end
+		end
+		if typeof(sethiddenproperty) == "function" and lp then
+			for _, prop in ipairs({ "SimulationRadius", "MaxSimulationRadius" }) do
+				local ok = pcall(function()
+					sethiddenproperty(lp, prop, 0)
+				end)
+				if ok then
+					applied[#applied + 1] = "sethiddenproperty(" .. prop .. "=0)"
+				end
+			end
+		end
+		-- Also try settings Network / Replication if exposed.
+		pcall(function()
+			settings().Network.IncomingReplicationLag = 0
+		end)
+		if #applied > 0 then
+			log("MinSimRadius:", table.concat(applied, " | "))
+		else
+			log("MinSimRadius: no executor API (setsimulationradius/sethiddenproperty)")
+		end
+		return applied
+	end
+
+	-- Own character: no shadows / Animate / clothing meshes; keep HRP + Humanoid + Tools.
+	function Opt.StripLocalCharacter(config, localPlayer)
+		if not (cfgBool(config, "EnableFPSOpt", true) and cpuKnob(config, "Strip Character")) then
+			return 0
+		end
+		local lp = localPlayer or Players.LocalPlayer
+		local char = lp and lp.Character
+		if not char then
+			return 0
+		end
+		local n = 0
+		safe(function()
+			for _, child in ipairs(char:GetChildren()) do
+				if child:IsA("Tool") then
+					-- keep tools for EquipTool; strip FX/sounds only
+					for _, d in ipairs(child:GetDescendants()) do
+						if DESTROY_CLASS[d.ClassName] or FX_CLASS[d.ClassName] or d:IsA("Sound") then
+							n += destroyInst(d)
+						end
+					end
+				elseif child.Name == "HumanoidRootPart" or child:IsA("Humanoid") then
+					if child:IsA("BasePart") then
+						safe(function()
+							child.CastShadow = false
+							child.Material = Enum.Material.SmoothPlastic
+						end)
+						clearMeshIds(child)
+					elseif child:IsA("Humanoid") then
+						safe(function()
+							child.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+						end)
+						-- Stop animator tracks (CPU).
+						pcall(function()
+							local animator = child:FindFirstChildOfClass("Animator")
+							if animator then
+								for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+									track:Stop(0)
+								end
+							end
+						end)
+					end
+				elseif child:IsA("LocalScript") or child:IsA("Script") then
+					if child.Name == "Animate" or child.Name == "Health" or child.Name == "Sound" or child.Name == "RbxCharacterSounds" then
+						n += destroyInst(child)
+					end
+				elseif DESTROY_CLASS[child.ClassName] or child:IsA("Accessory") or child:IsA("Hat") or child:IsA("Shirt") or child:IsA("Pants") or child:IsA("ShirtGraphic") or child:IsA("BodyColors") or child:IsA("CharacterMesh") then
+					n += destroyInst(child)
+				elseif child:IsA("BasePart") then
+					clearMeshIds(child)
+					safe(function()
+						child.CastShadow = false
+						child.Material = Enum.Material.SmoothPlastic
+						child.Reflectance = 0
+						child.Transparency = 1
+						child.LocalTransparencyModifier = 1
+					end)
+					for _, c in ipairs(child:GetChildren()) do
+						if c:IsA("SpecialMesh") or c:IsA("FileMesh") or c:IsA("Decal") or c:IsA("Texture") then
+							n += destroyInst(c)
+						elseif DESTROY_CLASS[c.ClassName] or FX_CLASS[c.ClassName] or c:IsA("Sound") then
+							n += destroyInst(c)
+						end
+					end
+					bumpStripped(1)
+					n += 1
+				end
+			end
+		end)
+		return n
+	end
+
+	-- Bundle: CoreGui + camera + sim radius + char strip (logged as Max CPU knobs).
+	function Opt.ApplyMaxCpu(config, localPlayer)
+		if not cfgBool(config, "EnableFPSOpt", true) then
+			return {}
+		end
+		local applied = {}
+		local function merge(list, prefix)
+			for _, s in ipairs(list or {}) do
+				applied[#applied + 1] = (prefix and (prefix .. s)) or s
+			end
+		end
+		merge(Opt.DisableCoreGui(config), "CoreGui:")
+		merge(Opt.LockCamera(config, localPlayer), "Cam:")
+		merge(Opt.MinSimRadius(config, localPlayer), "SimR:")
+		local sn = Opt.StripLocalCharacter(config, localPlayer)
+		if sn > 0 then
+			applied[#applied + 1] = "StripChar=" .. tostring(sn)
+		elseif cpuKnob(config, "Strip Character") then
+			applied[#applied + 1] = "StripChar=0"
+		end
+		if cfgBool(config, "Max CPU Opt", true) then
+			applied[#applied + 1] = "MaxCPUOpt=true"
+		end
+		if #applied > 0 then
+			log("ApplyMaxCpu:", table.concat(applied, " | "))
+		end
+		return applied
 	end
 
 	function Opt.MuteSounds(config)
@@ -1549,12 +1993,42 @@ do
 			SoundService.AmbientReverb = Enum.ReverbType.NoReverb
 			SoundService.RespectFilteringEnabled = true
 			SoundService.Volume = 0
+			pcall(function()
+				SoundService.AmbientReverb = Enum.ReverbType.NoReverb
+			end)
+			pcall(function()
+				SoundService.IsUsingNewSoundSystem = false
+			end)
+		end)
+		safe(function()
+			local ugs = UserSettings():GetService("UserGameSettings")
+			ugs.MasterVolume = 0
 		end)
 		local n = 0
-		for _, root in ipairs({ SoundService, workspace }) do
+		local roots = { SoundService, workspace }
+		local lp = Players.LocalPlayer
+		if lp then
+			roots[#roots + 1] = lp:FindFirstChild("PlayerGui")
+			if lp.Character then
+				roots[#roots + 1] = lp.Character
+			end
+		end
+		for _, root in ipairs(roots) do
+			if not root then
+				continue
+			end
 			safe(function()
 				for _, s in ipairs(root:GetDescendants()) do
-					if s:IsA("Sound") then
+					if s:IsA("Sound") or s:IsA("SoundGroup") then
+						pcall(function()
+							if s:IsA("Sound") then
+								s.Volume = 0
+								s.Playing = false
+								s:Stop()
+							else
+								s.Volume = 0
+							end
+						end)
 						n += destroyInst(s)
 					end
 				end
@@ -1662,6 +2136,8 @@ do
 			return 0
 		end
 		-- Never Destroy other characters — locked-parent errors from handle reparent.
+		-- Max CPU: Parent=nil (client despawn), anchor, kill Animate/Animator, strip harder.
+		local aggressive = cpuKnob(config, "Max CPU Opt")
 		local n = 0
 		local function hideModel(model)
 			if not model then
@@ -1669,7 +2145,9 @@ do
 			end
 			safe(function()
 				for _, d in ipairs(model:GetDescendants()) do
-					if DESTROY_CLASS[d.ClassName] or FX_CLASS[d.ClassName] then
+					if DESTROY_CLASS[d.ClassName] or FX_CLASS[d.ClassName] or d:IsA("Sound") then
+						destroyInst(d)
+					elseif d:IsA("LocalScript") or d:IsA("Script") then
 						destroyInst(d)
 					elseif d:IsA("SpecialMesh") or d:IsA("FileMesh") then
 						clearMeshIds(d)
@@ -1680,13 +2158,35 @@ do
 						d.Transparency = 1
 						d.CanCollide = false
 						d.CanQuery = false
+						d.CanTouch = false
 						d.CastShadow = false
+						d.Anchored = true
+						d.AssemblyLinearVelocity = Vector3.zero
+						d.AssemblyAngularVelocity = Vector3.zero
 						bumpStripped(1)
+					elseif d:IsA("Humanoid") then
+						d.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+						d.PlatformStand = true
+						pcall(function()
+							local animator = d:FindFirstChildOfClass("Animator")
+							if animator then
+								for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+									track:Stop(0)
+								end
+								destroyInst(animator)
+							end
+						end)
 					end
 				end
 				local hum = model:FindFirstChildOfClass("Humanoid")
 				if hum then
 					hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+				end
+				if aggressive then
+					-- Client-side unparent (cheaper than keeping invisible anchored rigs).
+					pcall(function()
+						model.Parent = nil
+					end)
 				end
 			end)
 			n += 1
@@ -1707,15 +2207,46 @@ do
 		if petVis then
 			n += destroyInst(petVis)
 		end
+		-- Aggressively wipe other player folders under workspace that aren't characters.
+		if aggressive then
+			safe(function()
+				for _, child in ipairs(workspace:GetChildren()) do
+					if child:IsA("Model") then
+						local owner = Players:GetPlayerFromCharacter(child)
+						if owner and owner ~= localPlayer then
+							hideModel(child)
+						end
+					end
+				end
+			end)
+		end
 		return n
 	end
 
 	-- Continuous stripper for newly streamed meshes / FX under kept roots.
+	local function isUnderTool(inst)
+		local p = inst
+		while p do
+			if p:IsA("Tool") then
+				return true
+			end
+			if p == workspace or p == game then
+				break
+			end
+			p = p.Parent
+		end
+		return false
+	end
+
 	local function shouldProtectInstance(inst, localPlayer)
 		if not inst then
 			return true
 		end
 		if inst:IsA("Terrain") or inst:IsA("Camera") then
+			return true
+		end
+		-- Tools (Handle / MeshPart) must survive EquipTool + remotes under headless strip.
+		if inst:IsA("Tool") or isUnderTool(inst) then
 			return true
 		end
 		if localPlayer and (inst == localPlayer.Character or inst:IsDescendantOf(localPlayer.Character)) then
@@ -1756,6 +2287,13 @@ do
 
 	local function stripIncomingInstance(inst, localPlayer)
 		if not inst or not inst.Parent then
+			return
+		end
+		-- Equipped / backpack tools: FX/sounds only — never clear Handle meshes (watering/plant remotes).
+		if inst:IsA("Tool") or isUnderTool(inst) then
+			if DESTROY_CLASS[inst.ClassName] or FX_CLASS[inst.ClassName] or inst:IsA("Sound") then
+				destroyInst(inst)
+			end
 			return
 		end
 		if DESTROY_CLASS[inst.ClassName] or FX_CLASS[inst.ClassName] or inst:IsA("Sound") then
@@ -1984,6 +2522,40 @@ do
 					)
 				end)
 			)
+			-- Existing players' CharacterAdded (PlayerAdded only covers joiners).
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= localPlayer then
+					table.insert(
+						conns,
+						plr.CharacterAdded:Connect(function(char)
+							task.defer(function()
+								if char and char.Parent then
+									Opt.HideOtherPlayers(config, localPlayer)
+								end
+							end)
+						end)
+					)
+				end
+			end
+		end
+
+		if cpuKnob(config, "Strip Character") and localPlayer then
+			table.insert(
+				conns,
+				localPlayer.CharacterAdded:Connect(function(char)
+					task.defer(function()
+						if char and char.Parent then
+							Opt.StripLocalCharacter(config, localPlayer)
+							Opt.LockCamera(config, localPlayer)
+						end
+					end)
+				end)
+			)
+			if localPlayer.Character then
+				task.defer(function()
+					Opt.StripLocalCharacter(config, localPlayer)
+				end)
+			end
 		end
 
 		table.insert(
@@ -2001,15 +2573,40 @@ do
 			table.insert(
 				conns,
 				SoundService.DescendantAdded:Connect(function(inst)
-					if inst:IsA("Sound") then
+					if inst:IsA("Sound") or inst:IsA("SoundGroup") then
 						task.defer(function()
 							if inst.Parent then
+								pcall(function()
+									if inst:IsA("Sound") then
+										inst.Volume = 0
+										inst:Stop()
+									end
+								end)
 								destroyInst(inst)
 							end
 						end)
 					end
 				end)
 			)
+			-- Workspace Sounds already killed by ClearMap DescendantAdded stripper; only add if ClearMap off.
+			if not cfgBool(config, "ClearMap", true) then
+				table.insert(
+					conns,
+					workspace.DescendantAdded:Connect(function(inst)
+						if inst:IsA("Sound") then
+							task.defer(function()
+								if inst.Parent then
+									pcall(function()
+										inst.Volume = 0
+										inst:Stop()
+									end)
+									destroyInst(inst)
+								end
+							end)
+						end
+					end)
+				)
+			end
 		end
 
 		return function()
@@ -2033,30 +2630,92 @@ do
 		Stats.destroyed = 0
 		Stats.stripped = 0
 
-		Opt.ApplyRendering(config)
+		-- Render/sim floor FIRST (prevent cost), then nuke/strip (cleanup already-loaded).
+		local applied = Opt.ApplyRendering(config)
+		local maxCpuApplied = Opt.ApplyMaxCpu(config, localPlayer)
 		Opt.MuteSounds(config)
 		local a = Opt.ClearWorkspaceJunk(config)
 		local b = Opt.ClearMapJunk(config)
+		-- Skip Loading: short PlotId poll (remotes work without full asset stream).
+		local plotCap = cfgBool(config, "Skip Loading", true) and 5 or 20
 		local plotWait = 0
-		while getOwnPlotId(localPlayer) == nil and plotWait < 20 do
-			task.wait(0.25)
-			plotWait += 0.25
+		while getOwnPlotId(localPlayer) == nil and plotWait < plotCap do
+			task.wait(0.15)
+			plotWait += 0.15
 		end
+		-- Re-assert headless after wait (some clients re-enable on stream).
+		Opt.ApplyRendering(config)
+		Opt.ApplyMaxCpu(config, localPlayer)
 		local c = Opt.ClearOtherGardens(config, localPlayer)
 		local d = Opt.HideOtherPlayers(config, localPlayer)
 		log(string.format(
-			"NUKE ws=%d map=%d plotOps=%d hidePlayers=%d | destroyed=%d stripped(meshes)=%d plotId=%s keep={own Plants/Base/Fruits,PlantArea,Sprinklers,SeedServer,WildPet*,DroppedItems,Handles,FH_AntiVoid}",
+			"NUKE ws=%d map=%d plotOps=%d hidePlayers=%d | destroyed=%d stripped(meshes)=%d plotId=%s | render3d=%s graphicsFloor=%s reduceSim=%s maxCpu=%s keep={own Plants/Base/Fruits,PlantArea,Sprinklers,SeedServer CanTouch,WildPet*,DroppedItems,Handles,FH_AntiVoid,HRP}",
 			a,
 			b,
 			c,
 			d,
 			Stats.destroyed,
 			Stats.stripped,
-			tostring(getOwnPlotId(localPlayer))
+			tostring(getOwnPlotId(localPlayer)),
+			tostring(cfgBool(config, "Disable 3D Render", true)),
+			tostring(cfgBool(config, "Graphics Floor", true)),
+			tostring(cfgBool(config, "Reduce Simulation", true)),
+			tostring(cfgBool(config, "Max CPU Opt", true))
 		))
+		if applied and #applied > 0 then
+			log("enabled knobs:", table.concat(applied, " | "))
+		end
+		if maxCpuApplied and #maxCpuApplied > 0 then
+			log("max-cpu knobs:", table.concat(maxCpuApplied, " | "))
+		end
 		local stopWatch = Opt.WatchIncoming(config, localPlayer)
 
 		local running = true
+		-- Fast re-assert: Set3dRenderingEnabled + CoreGui + camera (game may flip these back).
+		-- task.wait only — no RenderStepped / Heartbeat from Opt side.
+		if cpuKnob(config, "Reassert Render") then
+			task.spawn(function()
+				while running do
+					task.wait(2.5)
+					if not running then
+						break
+					end
+					if cfgBool(config, "Disable 3D Render", true) then
+						pcall(function()
+							RunService:Set3dRenderingEnabled(false)
+						end)
+					end
+					if cpuKnob(config, "Disable CoreGui") then
+						pcall(function()
+							StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+						end)
+					end
+					if cpuKnob(config, "Lock Camera") then
+						pcall(function()
+							local cam = workspace.CurrentCamera
+							if cam then
+								cam.CameraType = Enum.CameraType.Scriptable
+								cam.FieldOfView = 1
+							end
+						end)
+					end
+					if cpuKnob(config, "Min Simulation Radius") then
+						pcall(function()
+							if typeof(setsimulationradius) == "function" then
+								setsimulationradius(0, 0)
+							end
+						end)
+						pcall(function()
+							if typeof(sethiddenproperty) == "function" and localPlayer then
+								sethiddenproperty(localPlayer, "SimulationRadius", 0)
+								sethiddenproperty(localPlayer, "MaxSimulationRadius", 0)
+							end
+						end)
+					end
+				end
+			end)
+		end
+
 		task.spawn(function()
 			while running do
 				task.wait(6)
@@ -2070,6 +2729,7 @@ do
 					Opt.MuteSounds(config)
 					Opt.ApplyRendering(config)
 				end
+				Opt.ApplyMaxCpu(config, localPlayer)
 				if cfgBool(config, "ClearOtherGardens", true) then
 					Opt.ClearOtherGardens(config, localPlayer)
 				end
@@ -2110,14 +2770,26 @@ if not LocalPlayer then
 	LocalPlayer = Players.PlayerAdded:Wait()
 end
 
-if not game:IsLoaded() then
-	game.Loaded:Wait()
-end
-
 ----------------------------------------------------------------
 -- Polyfills
 ----------------------------------------------------------------
 local env = (getgenv and getgenv()) or _G
+local _userCfgEarly = env.UserConfig
+local SKIP_LOADING = not _userCfgEarly or _userCfgEarly["Skip Loading"] ~= false
+
+-- Skip Loading: do not block on full asset stream — remotes + plot are enough.
+-- Brief cap only so Streaming/IsLoaded can settle without hanging headless boot.
+if not game:IsLoaded() then
+	if SKIP_LOADING then
+		local loadCap = tick() + 2
+		while not game:IsLoaded() and tick() < loadCap do
+			task.wait(0.05)
+		end
+	else
+		game.Loaded:Wait()
+	end
+end
+
 if typeof(setfpscap) ~= "function" then
 	if typeof(set_fps_cap) == "function" then
 		setfpscap = set_fps_cap
@@ -2137,14 +2809,45 @@ end
 ----------------------------------------------------------------
 -- Networking / data
 ----------------------------------------------------------------
-local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
-local SeedData = require(ReplicatedStorage.SharedModules.SeedData)
-local GearShopData = require(ReplicatedStorage.SharedModules.GearShopData)
+-- Prefer short WaitForChild under Skip Loading (assets may still stream).
+local function waitChild(parent, name, timeoutSec)
+	if not parent then
+		return nil
+	end
+	local existing = parent:FindFirstChild(name)
+	if existing then
+		return existing
+	end
+	local ok, child = pcall(function()
+		return parent:WaitForChild(name, timeoutSec or (SKIP_LOADING and 8 or 30))
+	end)
+	if ok then
+		return child
+	end
+	return parent:FindFirstChild(name)
+end
+
+local SharedModules = waitChild(ReplicatedStorage, "SharedModules", SKIP_LOADING and 8 or 60)
+if not SharedModules then
+	SharedModules = ReplicatedStorage:WaitForChild("SharedModules", 30)
+end
+assert(SharedModules, "[FH-Farm] SharedModules missing — remotes not ready")
+local NetworkingModule = waitChild(SharedModules, "Networking", SKIP_LOADING and 8 or 60)
+	or SharedModules:WaitForChild("Networking", 30)
+assert(NetworkingModule, "[FH-Farm] Networking module missing")
+local Networking = require(NetworkingModule)
+local function requireMod(parent, name)
+	local mod = waitChild(parent, name, SKIP_LOADING and 8 or 30)
+	assert(mod, "[FH-Farm] missing module " .. tostring(name))
+	return require(mod)
+end
+local SeedData = requireMod(SharedModules, "SeedData")
+local GearShopData = requireMod(SharedModules, "GearShopData")
 local PetData = require(ReplicatedStorage.SharedData.PetData)
-local Worlds = require(ReplicatedStorage.SharedModules.Worlds)
+local Worlds = requireMod(SharedModules, "Worlds")
 local PlayerStateClient = require(ReplicatedStorage.ClientModules.PlayerStateClient)
-local WateringcanData = require(ReplicatedStorage.SharedModules.WateringcanData)
-local SprinklerData = require(ReplicatedStorage.SharedModules.SprinklerData)
+local WateringcanData = requireMod(SharedModules, "WateringcanData")
+local SprinklerData = requireMod(SharedModules, "SprinklerData")
 
 -- SeedData is an ARRAY of { SeedName, PurchasePrice, ... } — NOT a name-keyed map.
 local SeedDataByName = {}
@@ -3029,7 +3732,9 @@ local function toolSeedCount(tool)
 	return 1
 end
 
-local function equipTool(tool)
+-- Equip via Humanoid. opts.fast = short settle (gears/water) — never wait mesh/texture/Loaded/anim.
+local function equipTool(tool, opts)
+	opts = opts or {}
 	if not tool or not tool.Parent then
 		return false
 	end
@@ -3050,14 +3755,29 @@ local function equipTool(tool)
 	if not ok then
 		return false
 	end
-	-- SeedHandleController spawns Handle after equip; give it a few frames
-	for _ = 1, 8 do
+	-- Parent-to-character only. Do NOT wait tool.Loaded / Handle Mesh / equip anim (headless breaks those).
+	local frames = opts.fast and 3 or 8
+	local step = opts.fast and 0.05 or 0.05
+	for _ = 1, frames do
 		if tool.Parent == char then
 			return true
 		end
-		task.wait(0.05)
+		task.wait(step)
 	end
 	return tool.Parent == char
+end
+
+-- Short-retry equip for watering/sprinkler under Skip Loading / max CPU (no appearance gate).
+local function equipToolRetry(tool, attempts)
+	attempts = attempts or 3
+	for i = 1, attempts do
+		if tool and tool.Parent and equipTool(tool, { fast = true }) then
+			task.wait(0.08) -- brief settle only
+			return true
+		end
+		task.wait(0.1)
+	end
+	return false
 end
 
 local function findToolByAttr(attrName, attrValue)
@@ -3433,11 +4153,6 @@ local function isWateringImmuneSeed(seedName)
 	return info ~= nil and info.WateringImmune == true
 end
 
-local function isGrowsForeverSeed(seedName)
-	local info = getSeedInfo(seedName)
-	return info ~= nil and info.GrowsForever == true
-end
-
 local function getPlantValue(plant)
 	local seedName = plant and plant:GetAttribute("SeedName")
 	local price = getSeedPrice(seedName)
@@ -3452,84 +4167,187 @@ local function getPlantValue(plant)
 	return 0
 end
 
--- Still developing if plant Age < MaxAge, any fruit Age < MaxAge, GrowsForever, or
--- script-tracked within PrimeTime window. PlantGrowthReady only means visualizer init done.
+-- GrowingListController / GardenSync: plant is "growing" iff Age < MaxAge.
+-- GrowsForever / fruit regen / PlantGrowthReady do NOT keep entries on Growing List.
+local GardenSyncCtrl = nil
+local function getGardenSync()
+	if GardenSyncCtrl ~= nil then
+		return GardenSyncCtrl ~= false and GardenSyncCtrl or nil
+	end
+	local ok, mod = pcall(function()
+		local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+			or LocalPlayer:WaitForChild("PlayerScripts", 2)
+		local ctrls = ps and (ps:FindFirstChild("Controllers") or ps:WaitForChild("Controllers", 2))
+		local m = ctrls and (ctrls:FindFirstChild("GardenSyncController") or ctrls:WaitForChild("GardenSyncController", 2))
+		return m and require(m) or nil
+	end)
+	if ok and mod then
+		GardenSyncCtrl = mod
+		return mod
+	end
+	GardenSyncCtrl = false
+	return nil
+end
+
+local function getSyncedPlantData(plantId)
+	if plantId == nil then
+		return nil
+	end
+	local sync = getGardenSync()
+	if not sync then
+		return nil
+	end
+	local ok, data = pcall(function()
+		if typeof(sync.GetPlant) == "function" then
+			return sync:GetPlant(LocalPlayer.UserId, plantId)
+		end
+		local garden = sync:GetGarden(LocalPlayer.UserId)
+		return garden and garden[plantId] or nil
+	end)
+	if ok then
+		return data
+	end
+	return nil
+end
+
+-- Age/MaxAge: model attrs (PlantVisualizer) with GardenSync fallback when attrs stripped/missing.
+local function getPlantAgeMax(plant)
+	if not plant then
+		return nil, nil
+	end
+	local age = tonumber(plant:GetAttribute("Age"))
+	local maxAge = tonumber(plant:GetAttribute("MaxAge"))
+	local pid = plant:GetAttribute("PlantId")
+	local syncData = getSyncedPlantData(pid)
+	if syncData then
+		-- Growing List admission uses GardenSync Age/MaxAge — prefer sync when present.
+		local sAge = tonumber(syncData.Age)
+		local sMax = tonumber(syncData.MaxAge)
+		if sAge ~= nil then
+			age = sAge
+		end
+		if sMax ~= nil then
+			maxAge = sMax
+		end
+	end
+	return age, maxAge
+end
+
+-- Mirror GrowingListController.CreatePlantTemplate / LoadExistingPlants: (Age or 0) < (MaxAge or 1).
 local function isPlantStillGrowing(plant)
 	if not plant or not plant:IsA("Model") then
 		return false
 	end
-	local seedName = plant:GetAttribute("SeedName")
-	if isGrowsForeverSeed(seedName) then
-		return true
-	end
+	local pid = plant:GetAttribute("PlantId")
+	local age, maxAge = getPlantAgeMax(plant)
 
-	local age = tonumber(plant:GetAttribute("Age")) or 0
-	local maxAge = tonumber(plant:GetAttribute("MaxAge")) or 0
-	if maxAge > 0 and age < maxAge - 1e-4 then
-		return true
-	end
-
-	local fruits = plant:FindFirstChild("Fruits")
-	if fruits then
-		local sawFruit = false
-		for _, fruit in ipairs(fruits:GetChildren()) do
-			sawFruit = true
-			local fAge = tonumber(fruit:GetAttribute("Age")) or 0
-			local fMax = tonumber(fruit:GetAttribute("MaxAge")) or 0
-			local ready = fruit:GetAttribute("HarvestReady") == true
-			if ready then
-				continue
-			end
-			if fMax > 0 and fAge < fMax - 1e-4 then
-				return true
-			end
-			if fMax <= 0 then
-				return true
-			end
+	-- No usable MaxAge (attrs missing after opt AND no GardenSync) → not on Growing List.
+	if typeof(maxAge) ~= "number" or maxAge <= 0 then
+		if pid then
+			State.recentPlants[pid] = nil
 		end
-		-- plant body done + every fruit ripe → gear waste
-		if sawFruit and maxAge > 0 and age >= maxAge then
-			return false
-		end
+		return false
 	end
+	age = typeof(age) == "number" and age or 0
 
-	if maxAge > 0 and age >= maxAge then
+	if age >= maxAge - 1e-4 then
+		if pid then
+			State.recentPlants[pid] = nil
+		end
 		return false
 	end
 
-	-- Attribute gap: fall back to PlantedAt + PrimeTime / script track
-	local info = getSeedInfo(seedName)
-	local prime = info and tonumber(info.PrimeTime) or nil
-	local plantedAt = tonumber(plant:GetAttribute("PlantedAt"))
-	if plantedAt and prime and prime > 0 then
-		local serverNow = workspace:GetServerTimeNow()
-		local elapsed = serverNow - plantedAt
-		if elapsed < 0 then
-			elapsed = os.time() - plantedAt
-		end
-		if elapsed >= 0 and elapsed < prime then
-			return true
+	-- PlantGrowthReady only means visualizer finished init — ignore for gear targeting.
+	return true
+end
+
+-- Growing List UI row count (ScrollingFrame children minus Template / layout chrome).
+local function countGrowingListUiEntries()
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	local gl = pg and pg:FindFirstChild("GrowingList")
+	local frame = gl and gl:FindFirstChild("Frame")
+	local notepad = frame and frame:FindFirstChild("Notepad")
+	local sf = notepad and notepad:FindFirstChild("ScrollingFrame")
+	if not sf then
+		return nil
+	end
+	local n = 0
+	for _, child in ipairs(sf:GetChildren()) do
+		if child:IsA("GuiObject") and child.Name ~= "Template" and child.Visible then
+			n += 1
 		end
 	end
+	return n
+end
 
-	local pid = plant:GetAttribute("PlantId")
-	local tracked = pid and State.recentPlants[pid]
-	if tracked then
-		local window = tracked.growWindow or prime or 120
-		if (now() - tracked.at) < window then
-			return true
+-- GardenSync plants with Age < MaxAge (same predicate as GrowingList LoadExistingPlants).
+local function countGrowingListSyncEntries()
+	local sync = getGardenSync()
+	if not sync or typeof(sync.GetGarden) ~= "function" then
+		return nil
+	end
+	local ok, garden = pcall(function()
+		return sync:GetGarden(LocalPlayer.UserId)
+	end)
+	if not ok or type(garden) ~= "table" then
+		return nil
+	end
+	local n = 0
+	for _, data in pairs(garden) do
+		if type(data) == "table" then
+			local age = tonumber(data.Age) or 0
+			local maxAge = tonumber(data.MaxAge) or 1
+			if age < maxAge then
+				n += 1
+			end
 		end
 	end
+	return n
+end
 
-	return false
+local function isGrowingListEmpty()
+	local uiN = countGrowingListUiEntries()
+	if typeof(uiN) == "number" then
+		return uiN <= 0
+	end
+	local syncN = countGrowingListSyncEntries()
+	if typeof(syncN) == "number" then
+		return syncN <= 0
+	end
+	-- Controllers unavailable: fall back to plot scan via isPlantStillGrowing.
+	return nil
 end
 
 local function pruneRecentPlants()
 	local t = now()
+	local sync = getGardenSync()
+	local garden = nil
+	if sync and typeof(sync.GetGarden) == "function" then
+		local ok, g = pcall(function()
+			return sync:GetGarden(LocalPlayer.UserId)
+		end)
+		if ok then
+			garden = g
+		end
+	end
 	for pid, info in pairs(State.recentPlants) do
 		local window = (info and info.growWindow) or 600
 		if not info or (t - info.at) > math.max(window * 2, 600) then
 			State.recentPlants[pid] = nil
+			continue
+		end
+		-- Drop tracks once plant left Growing List (Age >= MaxAge) or was removed.
+		if garden then
+			local data = garden[pid]
+			if not data then
+				State.recentPlants[pid] = nil
+			else
+				local age = tonumber(data.Age) or 0
+				local maxAge = tonumber(data.MaxAge) or 0
+				if maxAge > 0 and age >= maxAge - 1e-4 then
+					State.recentPlants[pid] = nil
+				end
+			end
 		end
 	end
 end
@@ -3571,6 +4389,11 @@ local function trackPlantedNear(plot, worldPos, seedName)
 	if not pid then
 		return
 	end
+	-- Only track while still growing; mature plants must not keep gears alive.
+	if not isPlantStillGrowing(best) then
+		State.recentPlants[pid] = nil
+		return
+	end
 	local info = getSeedInfo(seedName)
 	State.recentPlants[pid] = {
 		at = now(),
@@ -3581,7 +4404,8 @@ local function trackPlantedNear(plot, worldPos, seedName)
 end
 
 -- Growing (+ optionally waterable) gear targets, expensive-first when configured.
-local function getGearTargetPlants(plot, forWateringCan)
+-- Matches Growing List: Age < MaxAge only (not GrowsForever / recentPlants / fruit Age).
+local function getGrowingTargets(plot, forWateringCan)
 	local out = {}
 	local onlyGrowing = cfg("Gear Only Growing", true)
 	local preferExpensive = cfg("Gear Prefer Expensive", true)
@@ -3615,6 +4439,10 @@ local function getGearTargetPlants(plot, forWateringCan)
 		end)
 	end
 	return out
+end
+
+local function getGearTargetPlants(plot, forWateringCan)
+	return getGrowingTargets(plot, forWateringCan)
 end
 
 -- Densest / highest-value growing cluster not already covered by a sprinkler.
@@ -4138,11 +4966,18 @@ local function useGears()
 		return
 	end
 	withBusy("gearing", function()
+		-- Hard gate: Growing List empty → never equip / fire watering can or sprinklers.
+		local listEmpty = isGrowingListEmpty()
+		if listEmpty == true then
+			log("gear skip — growing list empty")
+			pruneRecentPlants()
+			return
+		end
 		-- Growing targets only (default). Skip empty / fully-ripe plots.
-		local growingWater = getGearTargetPlants(plot, true)
-		local growingAll = getGearTargetPlants(plot, false)
+		local growingWater = getGrowingTargets(plot, true)
+		local growingAll = getGrowingTargets(plot, false)
 		if #growingWater == 0 and #growingAll == 0 then
-			log("gear skip — no growing plants")
+			log("gear skip — growing list empty")
 			return
 		end
 		local plotId = LocalPlayer:GetAttribute("PlotId") or 1
@@ -4165,6 +5000,7 @@ local function useGears()
 			if tnow < cdUntil then
 				continue
 			end
+			-- Attribute-first tool find (no mesh/appearance dependency).
 			local tool = findToolByAttr("WateringCan", gearName) or findToolByAttr("Sprinkler", gearName)
 			if not tool then
 				eachTool(function(t)
@@ -4173,16 +5009,25 @@ local function useGears()
 					end
 				end)
 			end
-			if not tool or not equipTool(tool) then
+			if not tool then
 				continue
 			end
+			-- Fast equip + short retries — never wait tool visual load / anim under headless.
+			if not equipToolRetry(tool, 3) then
+				log("gear equip fail (short retry)", tostring(gearName))
+				continue
+			end
+			-- Re-resolve after equip (tool may have moved Backpack → Character).
+			tool = findToolByAttr("WateringCan", gearName)
+				or findToolByAttr("Sprinkler", gearName)
+				or tool
 
 			local can = tool:GetAttribute("WateringCan")
 			local spr = tool:GetAttribute("Sprinkler")
 
 			if can then
 				-- UseWateringCan(Vector3 aim, String canName, Instance tool)
-				-- Only growing / non-WateringImmune plants; expensive-first order.
+				-- Fire immediately after brief settle — no Mesh/Loaded/anim wait.
 				local plants = growingWater
 				if #plants == 0 then
 					log("water skip — no growing (non-immune) plants", tostring(can))
@@ -4199,13 +5044,35 @@ local function useGears()
 					if bursts >= maxBursts then
 						break
 					end
+					-- Keep equipped; re-equip with short timeout if stripped/unequipped mid-loop.
+					if tool.Parent ~= LocalPlayer.Character then
+						tool = findToolByAttr("WateringCan", gearName) or tool
+						if not equipToolRetry(tool, 2) then
+							log("water re-equip fail", tostring(can))
+							break
+						end
+						tool = findToolByAttr("WateringCan", gearName) or tool
+					end
 					local p = entry.pos
-					teleportNear(p, "water:" .. tostring(can), 3)
-					task.wait(0.06)
+					local tpOk = teleportNear(p, "water:" .. tostring(can), 3)
+					if not tpOk then
+						task.wait(0.08)
+						tpOk = teleportNear(p, "water:" .. tostring(can), 3)
+					end
+					task.wait(0.08) -- 0.05–0.15 settle; not appearance
 					local aim = p - Vector3.new(0, 0.3, 0)
-					retry(2, 0.08, function()
+					local fired = retry(3, 0.1, function()
 						Networking.WateringCan.UseWateringCan:Fire(aim, can, tool)
 					end)
+					if not fired then
+						-- one more equip+fire cycle on remote failure
+						if equipToolRetry(tool, 2) then
+							tool = findToolByAttr("WateringCan", gearName) or tool
+							retry(2, 0.1, function()
+								Networking.WateringCan.UseWateringCan:Fire(aim, can, tool)
+							end)
+						end
+					end
 					bursts += 1
 					wateredN += 1
 					for j, other in ipairs(plants) do
@@ -4244,7 +5111,7 @@ local function useGears()
 					end
 					if not tooClose then
 						teleportNear(spot, "sprinkler:" .. tostring(spr), 4)
-						task.wait(0.06)
+						task.wait(0.08)
 						retry(2, 0.1, function()
 							Networking.Place.PlaceSprinkler:Fire(spot, spr, tool, plotId)
 						end)
@@ -5190,7 +6057,7 @@ local function ensureSeedSpawnHooks()
 		end)
 	end)
 	task.spawn(function()
-		local map = workspace:WaitForChild("Map", 30)
+		local map = workspace:WaitForChild("Map", cfg("Skip Loading", true) and 8 or 30)
 		if not map then
 			return
 		end
@@ -5506,15 +6373,18 @@ end
 -- Boot
 ----------------------------------------------------------------
 local function waitReady()
-	local deadline = tick() + 60
+	-- Skip Loading: PlotId + plot instance enough — do not wait leaderstats / full stream.
+	local skip = cfg("Skip Loading", true)
+	local deadline = tick() + (skip and 8 or 60)
+	local step = skip and 0.1 or 0.25
 	while tick() < deadline do
-		if LocalPlayer:FindFirstChild("leaderstats") and LocalPlayer:GetAttribute("PlotId") then
-			local plot = getPlot()
-			if plot then
+		local plotId = LocalPlayer:GetAttribute("PlotId")
+		if plotId and (skip or LocalPlayer:FindFirstChild("leaderstats")) then
+			if getPlot() then
 				return true
 			end
 		end
-		task.wait(0.25)
+		task.wait(step)
 	end
 	return getPlot() ~= nil
 end
@@ -5538,16 +6408,45 @@ do
 		tostring(Networking.Plant and Networking.Plant.PlantSeed ~= nil),
 		"opt=",
 		tostring(cfg("EnableFPSOpt", true)),
+		"render3dOff=",
+		tostring(cfg("Disable 3D Render", true)),
+		"graphicsFloor=",
+		tostring(cfg("Graphics Floor", true)),
+		"reduceSim=",
+		tostring(cfg("Reduce Simulation", true)),
+		"maxCpu=",
+		tostring(cfg("Max CPU Opt", true)),
+		"coreGuiOff=",
+		tostring(cfg("Disable CoreGui", true)),
+		"lockCam=",
+		tostring(cfg("Lock Camera", true)),
+		"minSimR=",
+		tostring(cfg("Min Simulation Radius", true)),
+		"stripChar=",
+		tostring(cfg("Strip Character", true)),
+		"reassert3d=",
+		tostring(cfg("Reassert Render", true)),
+		"skipLoading=",
+		tostring(cfg("Skip Loading", true)),
 		"waitMulti=",
 		tostring(cfg("Wait SellFruitMultiplier", cfg("Wait Sell Multiplier", true)))
 	)
+end
+
+-- Headless + graphics floor BEFORE plot wait (prevent render cost while streaming).
+-- Nuke/strip still runs in Opt.Run after this; remotes/farm unaffected.
+do
+	local early = Opt.ApplyRendering(Config)
+	if early and #early > 0 then
+		log("pre-waitReady render floor ok")
+	end
 end
 
 if not waitReady() then
 	log("plot not ready — still starting loop")
 end
 
--- FPS / map opt (safe for own farm — waits PlotId, never kills Baseplate / own plot)
+-- FPS / map opt (safe for own farm — waits PlotId; render already off; then nuke/strip)
 local stopOpt = Opt.Run(Config, LocalPlayer)
 
 pcall(function()
