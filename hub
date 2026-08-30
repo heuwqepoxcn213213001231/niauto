@@ -22,31 +22,48 @@ local MAP_LABEL = {
  Lobby = "Main Lobby",
  House = "House · Map 1",
  Mansion = "Mansion · Map 2",
- GasStation = "Gas Station",
+ GasStation = "Gas Station · Map 3",
  Farm = "Farm",
 }
 
 local function detectMap()
- local id = game.PlaceId
- if id == PLACE.Lobby then return "Lobby" end
- if id == PLACE.Mansion then return "Mansion" end
  local am = workspace:GetAttribute("ActiveMap")
+ if type(am) == "string" and am ~= "" then return am end
+ pcall(function()
+  local folder = workspace:FindFirstChild("Map")
+  local mod = folder and folder:FindFirstChild("MapConfig")
+  if mod then am = require(mod).name end
+ end)
  if type(am) == "string" and am ~= "" then return am end
  local loc = workspace:FindFirstChild("Map")
  loc = loc and loc:FindFirstChild("Leave_Locations")
  if loc then
   if loc:FindFirstChild("Basement") or loc:FindFirstChild("Garage") then return "House" end
   if loc:FindFirstChild("Tennis Court") or loc:FindFirstChild("[F] Left Alley") then return "Mansion" end
-  if loc:FindFirstChild("Staff Room") then return "GasStation" end
+  if loc:FindFirstChild("Staff Room") or loc:FindFirstChild("Inside Gas Station") then return "GasStation" end
   return "Farm"
  end
+ if game.PlaceId == PLACE.Lobby then return "Lobby" end
  if workspace:FindFirstChild("Teams") and workspace.Teams:FindFirstChild("Square1") then
   return "Lobby"
  end
  return "Lobby"
 end
 
-local MAP_NAME = detectMap()
+local function waitFarmMap()
+ local name = detectMap()
+ if name ~= "Lobby" then return name end
+ if game.PlaceId == PLACE.Lobby then return "Lobby" end
+ local t0 = os.clock()
+ while os.clock() - t0 < 8 do
+  task.wait(0.15)
+  name = detectMap()
+  if name ~= "Lobby" then return name end
+ end
+ return detectMap()
+end
+
+local MAP_NAME = waitFarmMap()
 local IS_LOBBY = MAP_NAME == "Lobby"
 getgenv().FallPlace = MAP_NAME
 getgenv().NiaFarmPrefs = getgenv().NiaFarmPrefs or {
@@ -80,8 +97,9 @@ if queueteleport and LocalPlayer then
   queued = true
   local prefs = getgenv().NiaFarmPrefs or {}
   local boot = string.format(
-   "getgenv().HandCollectHub=true;getgenv().KeepNiaHub=true;getgenv().NiaAutoFarm=%s;getgenv().NiaFarmPrefs={map=%q,difficulty=%d,maxPlayers=%d,friendsOnly=%s};",
+   "getgenv().HandCollectHub=true;getgenv().KeepNiaHub=true;getgenv().NiaAutoFarm=%s;getgenv().NiaAutoJoin=%s;getgenv().NiaFarmPrefs={map=%q,difficulty=%d,maxPlayers=%d,friendsOnly=%s};",
    tostring(getgenv().NiaAutoFarm == true),
+   tostring(getgenv().NiaAutoJoin == true or getgenv().NiaAutoFarm == true),
    tostring(prefs.map or "House"),
    tonumber(prefs.difficulty) or 1,
    tonumber(prefs.maxPlayers) or 1,
@@ -91,18 +109,8 @@ if queueteleport and LocalPlayer then
  end)
 end
 
-local function readFirst(paths)
- if not (isfile and readfile) then return nil end
- for _, path in ipairs(paths) do
- if isfile(path) then
- return readfile(path)
- end
- end
- return nil
-end
-
-local src = readFirst({ "NiaUISilent/src.lua", "src.lua" })
-if not src then
+local src = game:HttpGet(CONFIG.SourceUrl .. "?t=" .. tostring(os.time()))
+if type(src) ~= "string" or #src < 80 then
  src = game:HttpGet(CONFIG.SourceUrl)
 end
 local NiaHub = loadstring(src)()
@@ -210,6 +218,7 @@ local Window = NiaHub:CreateWindow({
  DefaultTab = "Home",
  Credits = false,
  NotifyKeybind = false,
+ TogglePosition = UDim2.new(0.5, 0, 0.07, 0),
 })
 
 pcall(function()
@@ -231,8 +240,8 @@ do
   btn.Name = "MobileToggleButton"
   btn.BackgroundTransparency = 1
   btn.BorderSizePixel = 0
-  btn.AnchorPoint = Vector2.new(0, 0)
-  btn.Position = UDim2.fromOffset(16, 80)
+  btn.AnchorPoint = Vector2.new(0.5, 0)
+  btn.Position = UDim2.new(0.5, 0, 0.07, 0)
   btn.Size = UDim2.fromOffset(45, 45)
   btn.Image = "rbxassetid://136834285051667"
   btn.ZIndex = 100
@@ -350,8 +359,8 @@ ScriptChangelog:AddChangelogEntry({
  Version = "Hand Collect 1.2",
  Date = "Current",
  Changes = {
-  { Type = "Added", Text = "Place detect: lobby / House (map 1) / Mansion (map 2)" },
-  { Type = "Added", Text = "Mansion zone order + MapConfig prereq (alleys, courts, statues)" },
+  { Type = "Added", Text = "Detect map qua ActiveMap / MapConfig — House / Mansion / Gas Station chung 1 farm PlaceId" },
+  { Type = "Added", Text = "Gas Station zone order + buy LeafBlower / LeafMower (cash 24.99)" },
   { Type = "Added", Text = "Lobby Farm tab: map, difficulty, party size, start run" },
  },
 })
@@ -379,12 +388,101 @@ ScriptChangelog:AddChangelogEntry({
 
 Tabs.Farm = Window:AddTab({ Name = "Farm", Icon = "Lucide:leaf" })
 local FarmMain = Tabs.Farm:AddSubTab({
- Name = IS_LOBBY and "Start Run" or "Hand Collect",
+ Name = IS_LOBBY and "Auto Join" or "Hand Collect",
  Icon = IS_LOBBY and "Lucide:map" or "Lucide:hand",
 })
 
 local DIFF_OPTS = { "Easy", "Medium", "Hard", "Impossible" }
-local MAP_OPTS = { "House", "Mansion" }
+local MAP_OPTS = { "House", "Mansion", "GasStation" }
+
+local DiffCfg
+pcall(function()
+ DiffCfg = require(RS:WaitForChild("DifficultyConfig", 3))
+end)
+
+local unlockedMaps = { House = true }
+local beatenByMap = { House = 0, Mansion = 0, GasStation = 0 }
+
+local function attrNumber(inst, names)
+ if not inst then return nil end
+ for _, n in ipairs(names) do
+  local v = inst:GetAttribute(n)
+  if type(v) == "number" then return v end
+  if v == true then return 1 end
+  local ch = inst:FindFirstChild(n)
+  if ch then
+   if ch:IsA("IntValue") or ch:IsA("NumberValue") then return ch.Value end
+   if ch:IsA("BoolValue") and ch.Value then return 1 end
+  end
+ end
+ return nil
+end
+
+local function mapBeaten(key)
+ local n = beatenByMap[key]
+ if type(n) == "number" and n > 0 then return n end
+ local got = attrNumber(LocalPlayer, {
+  key, key .. "Best", "Best" .. key, key .. "Difficulty",
+  "Completed" .. key, "BestDifficulty" .. key,
+ })
+ if got then
+  beatenByMap[key] = got
+  return got
+ end
+ return n or 0
+end
+
+local function mapUnlocked(key)
+ if key == "House" then return true end
+ if unlockedMaps[key] == true then return true end
+ if LocalPlayer:GetAttribute("Unlocked" .. key) == true then
+  unlockedMaps[key] = true
+  return true
+ end
+ if key == "Mansion" then return mapBeaten("House") >= 1 end
+ if key == "GasStation" then return mapBeaten("Mansion") >= 1 end
+ return false
+end
+
+local function diffUnlocked(idx, mapKey)
+ idx = tonumber(idx) or 1
+ if idx <= 1 then return true end
+ local beaten = mapBeaten(mapKey or (getgenv().NiaFarmPrefs and getgenv().NiaFarmPrefs.map) or "House")
+ if DiffCfg and DiffCfg.isUnlocked then
+  return DiffCfg.isUnlocked(idx, beaten) == true
+ end
+ return idx <= math.clamp((tonumber(beaten) or 0) + 1, 1, #DIFF_OPTS)
+end
+
+local function ingestUnlockPayload(...)
+ for i = 1, select("#", ...) do
+  local v = select(i, ...)
+  if type(v) == "table" then
+   for k, val in pairs(v) do
+    if k == "House" or k == "Mansion" or k == "GasStation" then
+     if val == true then
+      unlockedMaps[k] = true
+     elseif type(val) == "number" then
+      beatenByMap[k] = val
+      if k == "House" or val >= 0 then unlockedMaps[k] = true end
+     end
+    end
+   end
+  end
+ end
+ if mapBeaten("House") >= 1 then unlockedMaps.Mansion = true end
+ if mapBeaten("Mansion") >= 1 then unlockedMaps.GasStation = true end
+end
+
+pcall(function()
+ local rem = RS:FindFirstChild("Remotes")
+ local menu = rem and rem:FindFirstChild("TeamMenu")
+ if menu then
+  menu.OnClientEvent:Connect(function(...)
+   ingestUnlockPayload(...)
+  end)
+ end
+end)
 
 local function teamAction(...)
  local rem = RS:FindFirstChild("Remotes")
@@ -422,15 +520,36 @@ local function sitSquare()
  return false
 end
 
+local function clampFarmPrefs()
+ local prefs = getgenv().NiaFarmPrefs
+ if not mapUnlocked(prefs.map) then
+  prefs.map = "House"
+ end
+ if not diffUnlocked(prefs.difficulty, prefs.map) then
+  prefs.difficulty = 1
+ end
+ return prefs
+end
+
+local function joinRun()
+ local prefs = clampFarmPrefs()
+ sitSquare()
+ task.wait(0.3)
+ teamAction("setMap", prefs.map or "House")
+ teamAction("setDifficulty", tonumber(prefs.difficulty) or 1)
+ teamAction("setMax", tonumber(prefs.maxPlayers) or 1)
+ teamAction("setFriendsOnly", prefs.friendsOnly == true)
+ task.wait(0.1)
+ teamAction("confirm")
+end
+
 local function setFarm(on)
  if IS_LOBBY then
   getgenv().NiaAutoFarm = on and true or false
-  NiaHub:Notify({
-   Title = "Farm",
-   Text = on and "Auto farm after teleport ON" or "Auto farm after teleport OFF",
-   Type = on and "success" or "info",
-   Duration = 3,
-  })
+  getgenv().NiaAutoJoin = on and true or false
+  if on then
+   task.spawn(joinRun)
+  end
   return
  end
  if on then
@@ -441,7 +560,6 @@ local function setFarm(on)
   end
   getgenv().NiaAutoFarm = true
   getgenv().StartHandCollect()
-  NiaHub:Notify({ Title = "Farm", Text = "Hand collect ON · " .. (MAP_LABEL[MAP_NAME] or MAP_NAME), Type = "success", Duration = 3 })
  else
   getgenv().NiaAutoFarm = false
   if type(getgenv().StopHandCollectRun) == "function" then
@@ -449,30 +567,46 @@ local function setFarm(on)
   else
    getgenv().StopHandCollect = true
   end
-  NiaHub:Notify({ Title = "Farm", Text = "Hand collect OFF", Type = "info", Duration = 3 })
  end
 end
 
 if IS_LOBBY then
- local prefs = getgenv().NiaFarmPrefs
+ task.spawn(function()
+  while task.wait(2.4) do
+   if getgenv().NiaAutoJoin == true then
+    joinRun()
+   end
+  end
+ end)
+
+ local prefs = clampFarmPrefs()
+ local mapDrop, diffDrop
  FarmMain:AddParagraph({
   Title = "Main Lobby",
   Icon = "Lucide:map-pin",
-  Text = "Place " .. tostring(game.PlaceId) .. "\nPlayers here: " .. tostring(#Players:GetPlayers()) .. "\nSit a pad, set map / difficulty / party, then Start Run.",
+  Text = "Place " .. tostring(game.PlaceId) .. "\nMap / difficulty khóa nếu chưa unlock.\nBật Auto Join để ngồi pad + confirm liên tục.",
  })
- FarmMain:AddDropdown({
+ mapDrop = FarmMain:AddDropdown({
   Text = "Map",
-  Description = "House = map 1 · Mansion = map 2",
+  Description = "Mansion = clear House Easy · Gas = clear Mansion Easy",
   Icon = "Lucide:map",
   Flag = "farmMap",
   Options = MAP_OPTS,
-  Default = prefs.map == "Mansion" and "Mansion" or "House",
+  Default = prefs.map or "House",
   Callback = function(value)
+   if not mapUnlocked(value) then
+    if mapDrop then mapDrop:Set(getgenv().NiaFarmPrefs.map or "House", true) end
+    return
+   end
    getgenv().NiaFarmPrefs.map = value
+   if not diffUnlocked(getgenv().NiaFarmPrefs.difficulty, value) then
+    getgenv().NiaFarmPrefs.difficulty = 1
+    if diffDrop then diffDrop:Set(DIFF_OPTS[1], true) end
+   end
    teamAction("setMap", value)
   end,
  })
- FarmMain:AddDropdown({
+ diffDrop = FarmMain:AddDropdown({
   Text = "Difficulty",
   Description = "Easy 90m · Medium 60m · Hard 30m · Impossible 20m",
   Icon = "Lucide:gauge",
@@ -483,6 +617,12 @@ if IS_LOBBY then
    local idx = 1
    for i, name in ipairs(DIFF_OPTS) do
     if name == value then idx = i break end
+   end
+   if not diffUnlocked(idx, getgenv().NiaFarmPrefs.map) then
+    if diffDrop then
+     diffDrop:Set(DIFF_OPTS[math.clamp(tonumber(getgenv().NiaFarmPrefs.difficulty) or 1, 1, 4)], true)
+    end
+    return
    end
    getgenv().NiaFarmPrefs.difficulty = idx
    teamAction("setDifficulty", idx)
@@ -511,42 +651,12 @@ if IS_LOBBY then
   end,
  })
  FarmMain:AddToggle({
-  Text = "Auto Farm After Join",
-  Description = "Start hand collect when you land on the farm place",
+  Text = "Auto Join",
+  Description = "Bật = ngồi pad + confirm map đã unlock, farm tự chạy sau teleport",
   Icon = "Lucide:play",
   Flag = "autoHandCollect",
   Default = getgenv().NiaAutoFarm == true,
   Callback = setFarm,
- })
- FarmMain:AddButton({
-  Text = "Start Run",
-  Description = "Sit pad → apply settings → confirm teleport",
-  Icon = "Lucide:rocket",
-  Callback = function()
-   local prefs = getgenv().NiaFarmPrefs
-   sitSquare()
-   task.wait(0.35)
-   local ok = teamAction("setMap", prefs.map or "House")
-   teamAction("setDifficulty", tonumber(prefs.difficulty) or 1)
-   teamAction("setMax", tonumber(prefs.maxPlayers) or 1)
-   teamAction("setFriendsOnly", prefs.friendsOnly == true)
-   task.wait(0.15)
-   if not teamAction("confirm") or not ok then
-    NiaHub:Notify({
-     Title = "Start Run",
-     Text = ok and "confirm sent" or "TeamAction missing — stand on a pad and use the game UI",
-     Type = ok and "info" or "warning",
-     Duration = 4,
-    })
-    return
-   end
-   NiaHub:Notify({
-    Title = "Start Run",
-    Text = (prefs.map or "House") .. " · " .. (DIFF_OPTS[prefs.difficulty] or "Easy") .. " · " .. tostring(prefs.maxPlayers or 1) .. "p",
-    Type = "success",
-    Duration = 3,
-   })
-  end,
  })
 else
  FarmMain:AddParagraph({
@@ -556,8 +666,8 @@ else
  })
  FarmMain:AddToggle({
   Text = "Auto Hand Collect",
-  Description = MAP_NAME == "Mansion"
-   and "Clear Mansion: alleys, courts, backyard, statues"
+  Description = MAP_NAME == "Mansion" and "Clear Mansion: alleys, courts, backyard, statues"
+   or MAP_NAME == "GasStation" and "Clear Gas Station: street → inside → storage → lot / roof"
    or "Grab leaves, sell, buy upgrades, clear zones",
   Icon = "Lucide:hand",
   Flag = "autoHandCollect",
