@@ -66,6 +66,61 @@ end
 local MAP_NAME = waitFarmMap()
 local IS_LOBBY = MAP_NAME == "Lobby"
 getgenv().FallPlace = MAP_NAME
+
+local function unlockThirdPerson()
+ if IS_LOBBY then
+  return
+ end
+ local UIS = game:GetService("UserInputService")
+ local function apply()
+  pcall(function()
+   LocalPlayer.CameraMode = Enum.CameraMode.Classic
+   LocalPlayer.CameraMinZoomDistance = 0.5
+   LocalPlayer.CameraMaxZoomDistance = 128
+  end)
+  pcall(function()
+   local sp = game:GetService("StarterPlayer")
+   sp.CameraMode = Enum.CameraMode.Classic
+   sp.CameraMinZoomDistance = 0.5
+   sp.CameraMaxZoomDistance = 128
+  end)
+  pcall(function()
+   game:GetService("RunService"):UnbindFromRenderStep("FirstPersonHeadBob")
+  end)
+  pcall(function()
+   local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+   local fp = ps and (ps:FindFirstChild("FirstPersonCamera") or ps:FindFirstChild("FirstPerson"))
+   if fp and fp:IsA("LocalScript") then
+    fp.Disabled = true
+   end
+  end)
+  local cam = workspace.CurrentCamera
+  local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+  if cam then
+   cam.CameraType = Enum.CameraType.Custom
+   if hum then
+    cam.CameraSubject = hum
+    hum.CameraOffset = Vector3.zero
+    hum.AutoRotate = true
+   end
+  end
+  UIS.MouseBehavior = Enum.MouseBehavior.Default
+  UIS.MouseIconEnabled = true
+ end
+ apply()
+ if not getgenv().NiaCamHook then
+  getgenv().NiaCamHook = true
+  LocalPlayer:GetPropertyChangedSignal("CameraMode"):Connect(function()
+   if LocalPlayer.CameraMode ~= Enum.CameraMode.Classic then
+    LocalPlayer.CameraMode = Enum.CameraMode.Classic
+   end
+  end)
+  LocalPlayer.CharacterAdded:Connect(function()
+   task.defer(apply)
+  end)
+ end
+end
+unlockThirdPerson()
 getgenv().NiaFarmPrefs = getgenv().NiaFarmPrefs or {
  map = "House",
  difficulty = 1,
@@ -115,10 +170,10 @@ if type(src) ~= "string" or #src < 80 then
 end
 local NiaHub = loadstring(src)()
 NiaHub:PreloadIcons({ "Lucide", "Material", "Phosphor", "SF" })
-NiaHub:SetScaleRange(2, 2)
+NiaHub:SetScaleRange(1.35, 1.35)
 
 local function bumpHubScale()
- NiaHub:SetScaleRange(2, 2)
+ NiaHub:SetScaleRange(1.35, 1.35)
 end
 
 pcall(function()
@@ -400,21 +455,38 @@ pcall(function()
  DiffCfg = require(RS:WaitForChild("DifficultyConfig", 3))
 end)
 
+-- beatenByMap[map] = độ đã CLEAR (0 chưa, 1 Easy, 2 Medium, 3 Hard, 4 Impossible)
+-- độ mở tiếp theo = beaten + 1  (Easy xong → Medium, Medium xong → Hard, Hard xong → Impossible)
 local unlockedMaps = { House = true }
-local beatenByMap = {}
-local clearedMaps = { House = false, Mansion = false, GasStation = false }
+local beatenByMap = { House = 0, Mansion = 0, GasStation = 0 }
 
-local function markCleared(key, beaten)
+local function raiseBeaten(key, n)
  if key ~= "House" and key ~= "Mansion" and key ~= "GasStation" then
   return
  end
- clearedMaps[key] = true
- unlockedMaps[key] = true
- beaten = tonumber(beaten)
- if beaten and beaten > (beatenByMap[key] or 0) then
-  beatenByMap[key] = beaten
- elseif not beatenByMap[key] then
-  beatenByMap[key] = 1
+ n = tonumber(n)
+ if not n then
+  return
+ end
+ if n > (beatenByMap[key] or 0) then
+  beatenByMap[key] = n
+ end
+ if n >= 1 then
+  unlockedMaps[key] = true
+ end
+end
+
+local function setBeaten(key, n)
+ if key ~= "House" and key ~= "Mansion" and key ~= "GasStation" then
+  return
+ end
+ n = tonumber(n)
+ if n == nil then
+  return
+ end
+ beatenByMap[key] = n
+ if n >= 1 then
+  unlockedMaps[key] = true
  end
 end
 
@@ -423,11 +495,11 @@ local function takeMapValue(key, val)
   return
  end
  if val == true then
-  markCleared(key, 1)
+  raiseBeaten(key, 1)
   return
  end
  if type(val) == "number" then
-  if val > 0 then markCleared(key, val) end
+  if val > 0 then raiseBeaten(key, val) end
   return
  end
  if type(val) ~= "table" then
@@ -436,11 +508,11 @@ local function takeMapValue(key, val)
  local beaten = val.Best or val.BestDifficulty or val.Difficulty or val.Highest
   or val.Cleared or val.beaten or val.highest or val.MaxDifficulty
  if type(val.BestTime) == "number" and val.BestTime > 0 then
-  markCleared(key, type(beaten) == "number" and beaten or 1)
+  raiseBeaten(key, type(beaten) == "number" and beaten or 1)
  elseif type(beaten) == "number" and beaten > 0 then
-  markCleared(key, beaten)
+  raiseBeaten(key, beaten)
  elseif val.Unlocked == true or val.Completed == true then
-  markCleared(key, 1)
+  raiseBeaten(key, 1)
  end
 end
 
@@ -471,11 +543,35 @@ local function scanGuiBest()
       break
      end
      if inst.Name == "House" or inst.Name == "Mansion" or inst.Name == "GasStation" then
-      markCleared(inst.Name, 1)
+      raiseBeaten(inst.Name, 1)
       break
      end
      inst = inst.Parent
     end
+   end
+  end
+ end
+end
+
+local DIFF_WORD = {
+ Easy = 1, EASY = 1,
+ Medium = 2, MEDIUM = 2,
+ Hard = 3, HARD = 3,
+ Impossible = 4, IMPOSSIBLE = 4,
+}
+
+local function scanGuiDifficulty(mapKey)
+ local pg = LocalPlayer:FindFirstChild("PlayerGui")
+ if not pg then
+  return
+ end
+ mapKey = mapKey or (getgenv().NiaFarmPrefs and getgenv().NiaFarmPrefs.map) or "House"
+ for _, d in ipairs(pg:GetDescendants()) do
+  if d:IsA("TextLabel") or d:IsA("TextButton") then
+   local idx = DIFF_WORD[d.Text]
+   if idx and d.Visible and d.AbsoluteSize.X > 20 then
+    -- Game đang hiện độ này = độ đó đã unlock → đã clear bậc trước
+    raiseBeaten(mapKey, idx - 1)
    end
   end
  end
@@ -515,29 +611,57 @@ local function pullServerData()
  end
 end
 
+local function parseLockToast(text)
+ if type(text) ~= "string" then
+  return
+ end
+ local map = getgenv().NiaFarmPrefs and getgenv().NiaFarmPrefs.map or "House"
+ if text:find("Beat Easy", 1, true) then
+  setBeaten(map, 0)
+ elseif text:find("Beat Medium", 1, true) then
+  setBeaten(map, 1)
+ elseif text:find("Beat Hard", 1, true) then
+  setBeaten(map, 2)
+ end
+end
+
 local function refreshProgress()
  scanPlayerProgress()
  scanGuiBest()
- if (beatenByMap.House or 0) >= 1 or clearedMaps.House then
+ scanGuiDifficulty()
+ if (beatenByMap.House or 0) >= 1 then
   unlockedMaps.Mansion = true
  end
- if (beatenByMap.Mansion or 0) >= 1 or clearedMaps.Mansion then
+ if (beatenByMap.Mansion or 0) >= 1 then
   unlockedMaps.GasStation = true
-  if not clearedMaps.House then
-   markCleared("House", 1)
-  end
+  raiseBeaten("House", 1)
  end
 end
 
 pcall(pullServerData)
 refreshProgress()
 
-local function mapBeaten(key)
- return tonumber(beatenByMap[key]) or 0
-end
+pcall(function()
+ local rem = RS:FindFirstChild("Remotes")
+ rem = rem and rem:FindFirstChild("Notify")
+ if rem then
+  rem.OnClientEvent:Connect(function(msg)
+   parseLockToast(msg)
+  end)
+ end
+ local pg = LocalPlayer:FindFirstChild("PlayerGui")
+ local gui = pg and pg:FindFirstChild("Gui")
+ local note = gui and gui:FindFirstChild("Notification")
+ local label = note and note:FindFirstChild("Text")
+ if label then
+  label:GetPropertyChangedSignal("Text"):Connect(function()
+   parseLockToast(label.Text)
+  end)
+ end
+end)
 
 local function mapCleared(key)
- return clearedMaps[key] == true or (beatenByMap[key] or 0) >= 1
+ return (beatenByMap[key] or 0) >= 1
 end
 
 local function mapUnlocked(key)
@@ -548,28 +672,23 @@ local function mapUnlocked(key)
  return false
 end
 
-local function diffUnlocked(idx, mapKey)
- idx = tonumber(idx) or 1
- if idx <= 1 then return true end
+local function highestOpen(mapKey)
  mapKey = mapKey or (getgenv().NiaFarmPrefs and getgenv().NiaFarmPrefs.map) or "House"
  local beaten = tonumber(beatenByMap[mapKey]) or 0
- -- Per-map: House Easy clear unlocks Medium on House only, not Gas.
- if mapKey == "House" and idx <= 2 then
-  return true
+ if DiffCfg and DiffCfg.highestUnlocked then
+  return DiffCfg.highestUnlocked(beaten)
  end
- if not mapCleared(mapKey) then
-  return false
- end
- if idx <= 2 then
-  return true
- end
- if beaten >= 2 then
-  if DiffCfg and DiffCfg.isUnlocked then
-   return DiffCfg.isUnlocked(idx, beaten) == true
-  end
-  return idx <= math.clamp(beaten + 1, 1, #DIFF_OPTS)
- end
- return true
+ return math.clamp(beaten + 1, 1, #DIFF_OPTS)
+end
+
+local function clampDiff(idx, mapKey)
+ idx = tonumber(idx) or 1
+ return math.clamp(math.min(idx, highestOpen(mapKey)), 1, #DIFF_OPTS)
+end
+
+local function diffUnlocked(idx, mapKey)
+ idx = tonumber(idx) or 1
+ return idx <= highestOpen(mapKey)
 end
 
 local function ingestUnlockPayload(...)
@@ -634,9 +753,7 @@ local function clampFarmPrefs()
  if not mapUnlocked(prefs.map) then
   prefs.map = "House"
  end
- if not diffUnlocked(prefs.difficulty, prefs.map) then
-  prefs.difficulty = 1
- end
+ prefs.difficulty = clampDiff(prefs.difficulty, prefs.map)
  return prefs
 end
 
@@ -694,7 +811,7 @@ if IS_LOBBY then
  FarmMain:AddParagraph({
   Title = "Main Lobby",
   Icon = "Lucide:map-pin",
-  Text = "Place " .. tostring(game.PlaceId) .. "\nDifficulty theo từng map. House có Best → Medium trên House, không phải Gas.",
+  Text = "Place " .. tostring(game.PlaceId) .. "\nEasy → Medium → Hard → Impossible. Chưa unlock thì tụt về độ cao nhất đã mở.",
  })
  mapDrop = FarmMain:AddDropdown({
   Text = "Map",
@@ -710,16 +827,16 @@ if IS_LOBBY then
     return
    end
    getgenv().NiaFarmPrefs.map = value
-   if not diffUnlocked(getgenv().NiaFarmPrefs.difficulty, value) then
-    getgenv().NiaFarmPrefs.difficulty = 1
-    if diffDrop then diffDrop:Set(DIFF_OPTS[1], true) end
-   end
+   local open = clampDiff(getgenv().NiaFarmPrefs.difficulty, value)
+   getgenv().NiaFarmPrefs.difficulty = open
+   if diffDrop then diffDrop:Set(DIFF_OPTS[open], true) end
    teamAction("setMap", value)
+   teamAction("setDifficulty", open)
   end,
  })
  diffDrop = FarmMain:AddDropdown({
   Text = "Difficulty",
-  Description = "Unlock theo map đang chọn. House Best = Medium House",
+  Description = "Easy → Medium → Hard → Impossible · chưa mở thì về bậc trước",
   Icon = "Lucide:gauge",
   Flag = "farmDifficulty",
   Options = DIFF_OPTS,
@@ -730,14 +847,29 @@ if IS_LOBBY then
    for i, name in ipairs(DIFF_OPTS) do
     if name == value then idx = i break end
    end
-   if not diffUnlocked(idx, getgenv().NiaFarmPrefs.map) then
-    if diffDrop then
-     diffDrop:Set(DIFF_OPTS[math.clamp(tonumber(getgenv().NiaFarmPrefs.difficulty) or 1, 1, 4)], true)
-    end
-    return
+   local map = getgenv().NiaFarmPrefs.map
+   local open = clampDiff(idx, map)
+   getgenv().NiaFarmPrefs.difficulty = open
+   if open ~= idx and diffDrop then
+    diffDrop:Set(DIFF_OPTS[open], true)
    end
-   getgenv().NiaFarmPrefs.difficulty = idx
-   teamAction("setDifficulty", idx)
+   teamAction("setDifficulty", open)
+   task.delay(0.25, function()
+    parseLockToast((function()
+     local pg = LocalPlayer:FindFirstChild("PlayerGui")
+     local gui = pg and pg:FindFirstChild("Gui")
+     local note = gui and gui:FindFirstChild("Notification")
+     local label = note and note:FindFirstChild("Text")
+     return label and label.Text
+    end)())
+    refreshProgress()
+    local again = clampDiff(getgenv().NiaFarmPrefs.difficulty, map)
+    getgenv().NiaFarmPrefs.difficulty = again
+    if diffDrop then diffDrop:Set(DIFF_OPTS[again], true) end
+    if again ~= open then
+     teamAction("setDifficulty", again)
+    end
+   end)
   end,
  })
  FarmMain:AddSlider({
