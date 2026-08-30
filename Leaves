@@ -576,9 +576,6 @@ local function grab(need, zoneName)
 	for _, id in ids do
 		usedIds[id] = true
 	end
-	if api and type(api.collectMany) == "function" then
-		pcall(api.collectMany, parts)
-	end
 	bustLeafCache()
 	return after - before
 end
