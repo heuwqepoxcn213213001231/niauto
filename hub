@@ -13,10 +13,51 @@ end
 local LocalPlayer = Players.LocalPlayer
 local RS = game:GetService("ReplicatedStorage")
 
+local GIT = "https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/"
+
 local PLACE = {
  Lobby = 92637789841354,
  Mansion = 100068273119174,
 }
+
+local GAMES = {
+ FallHarvest = {
+  ids = {
+   [92637789841354] = true,
+   [100068273119174] = true,
+  },
+  farm = GIT .. "Leaves",
+ },
+ StealEgg = {
+  ids = {
+   [107778070777162] = true,
+   [98345564489939] = true,
+  },
+  farm = GIT .. "steal_field",
+ },
+}
+
+local function detectGame()
+ local id = game.PlaceId
+ for name, g in pairs(GAMES) do
+  if g.ids[id] then
+   return name
+  end
+ end
+ if workspace:FindFirstChild("Plots") and RS:FindFirstChild("Shared") and RS.Shared:FindFirstChild("Remotes") then
+  return "StealEgg"
+ end
+ if workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("Leave_Locations") then
+  return "FallHarvest"
+ end
+ if workspace:FindFirstChild("Teams") and workspace.Teams:FindFirstChild("Square1") then
+  return "FallHarvest"
+ end
+ return "FallHarvest"
+end
+
+local GAME_NAME = detectGame()
+getgenv()._NiaGame = GAME_NAME
 
 local MAP_LABEL = {
  Lobby = "Main Lobby",
@@ -24,9 +65,16 @@ local MAP_LABEL = {
  Mansion = "Mansion · Map 2",
  GasStation = "Gas Station · Map 3",
  Farm = "Farm",
+ StealEgg = "Steal An Egg",
 }
 
 local function detectMap()
+ if GAME_NAME == "StealEgg" or (GAMES.StealEgg and GAMES.StealEgg.ids[game.PlaceId]) then
+  return "StealEgg"
+ end
+ if workspace:FindFirstChild("Plots") and RS:FindFirstChild("Shared") and RS.Shared:FindFirstChild("Remotes") then
+  return "StealEgg"
+ end
  local am = workspace:GetAttribute("ActiveMap")
  if type(am) == "string" and am ~= "" then return am end
  pcall(function()
@@ -66,6 +114,7 @@ end
 local MAP_NAME = waitFarmMap()
 local IS_LOBBY = MAP_NAME == "Lobby"
 getgenv().FallPlace = MAP_NAME
+print("[Nia Hub] game", GAME_NAME, "map", MAP_NAME, "place", game.PlaceId)
 
 local function unlockThirdPerson()
  if IS_LOBBY then
@@ -129,9 +178,9 @@ getgenv().NiaFarmPrefs = getgenv().NiaFarmPrefs or {
 }
 
 local CONFIG = {
- SourceUrl = "https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/NiaUI",
- FarmUrl = "https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/Leaves",
- HubUrl = "https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/hub",
+ SourceUrl = GIT .. "NiaUI",
+ FarmUrl = (GAMES[GAME_NAME] and GAMES[GAME_NAME].farm) or (GIT .. "Leaves"),
+ HubUrl = GIT .. "hub",
  FeedbackWebhook = "",
  CloudBaseUrl = "",
  CommunityUrl = "https://discord.gg/niauto",
@@ -232,27 +281,39 @@ local function runLua(src, name)
  return true
 end
 
+local function farmUrl()
+ local g = GAMES[GAME_NAME]
+ return (g and g.farm) or CONFIG.FarmUrl
+end
+
 local function loadFarm()
+ if getgenv()._NiaFarmGame ~= GAME_NAME then
+  getgenv().StartHandCollect = nil
+  getgenv().StopHandCollectRun = nil
+  getgenv()._NiaFarmGame = GAME_NAME
+ end
  if type(getgenv().StartHandCollect) == "function" then
   return true
  end
- local farm, getErr = httpGet(CONFIG.FarmUrl .. "?t=" .. tostring(os.time()))
+ local url = farmUrl()
+ local farm, getErr = httpGet(url .. "?t=" .. tostring(os.time()))
  if not farm then
-  farm, getErr = httpGet(CONFIG.FarmUrl)
+  farm, getErr = httpGet(url)
  end
  if not farm then
-  warn("[Nia Hub] farm HttpGet", getErr)
-  return false, "HttpGet FarmUrl failed"
+  warn("[Nia Hub] farm HttpGet", GAME_NAME, getErr)
+  return false, "HttpGet farm failed (" .. GAME_NAME .. ")"
  end
  farm = farm:gsub("function%s+getgenv%s*%(%s*%)%s*%.([%w_]+)%s*%(", "getgenv().%1 = function(")
- local ok, err = runLua(farm, "@Leaves")
+ local ok, err = runLua(farm, "@" .. GAME_NAME)
  if not ok then
   warn("[Nia Hub] farm", err)
   return false, tostring(err)
  end
  if type(getgenv().StartHandCollect) ~= "function" then
-  return false, "FarmUrl loaded but StartHandCollect missing"
+  return false, "farm loaded but StartHandCollect missing"
  end
+ print("[Nia Hub] farm", GAME_NAME, url)
  return true
 end
 
@@ -273,7 +334,7 @@ local Window = NiaHub:CreateWindow({
  DefaultTab = "Home",
  Credits = false,
  NotifyKeybind = false,
- TogglePosition = UDim2.new(0.5, 0, 0.07, 0),
+ TogglePosition = UDim2.new(0.5, 0, 0.14, 0),
 })
 
 pcall(function()
@@ -296,6 +357,8 @@ do
    inst.Image = TOGGLE_IMAGE
    inst.ImageRectOffset = Vector2.zero
    inst.ImageRectSize = Vector2.zero
+   inst.AnchorPoint = Vector2.new(0.5, 0)
+   inst.Position = UDim2.new(0.5, 0, 0.14, 0)
   end
  end
  local found
@@ -315,7 +378,7 @@ do
   btn.BackgroundTransparency = 1
   btn.BorderSizePixel = 0
   btn.AnchorPoint = Vector2.new(0.5, 0)
-  btn.Position = UDim2.new(0.5, 0, 0.07, 0)
+  btn.Position = UDim2.new(0.5, 0, 0.14, 0)
   btn.Size = UDim2.fromOffset(45, 45)
   btn.Image = TOGGLE_IMAGE
   btn.ZIndex = 100
@@ -384,7 +447,7 @@ Details:AddSystemInfoGrid({
 
 local statusGrid = Details:AddInfoGrid({
  Title = "Status",
- Description = IS_LOBBY and "Lobby — pick map / difficulty / party" or "Bag, quest, leftover leaves, zones left",
+ Description = IS_LOBBY and "Lobby — pick map / difficulty / party" or (MAP_NAME == "StealEgg" and "Field eggs, tween speed, carry" or "Bag, quest, leftover leaves, zones left"),
  Color = Color3.fromRGB(88, 140, 255),
  Columns = 2,
  Items = {
@@ -898,12 +961,12 @@ else
  FarmMain:AddParagraph({
   Title = MAP_LABEL[MAP_NAME] or MAP_NAME,
   Icon = "Lucide:leaf",
-  Text = "Place " .. tostring(game.PlaceId) .. " · " .. MAP_NAME,
+  Text = GAME_NAME .. " · Place " .. tostring(game.PlaceId) .. " · " .. MAP_NAME,
  })
  FarmMain:AddToggle({
-  Text = "Auto Hand Collect",
-  Description = "Collect, sell, buy, and clear zones",
-  Icon = "Lucide:hand",
+  Text = MAP_NAME == "StealEgg" and "Auto Steal Field" or "Auto Hand Collect",
+  Description = MAP_NAME == "StealEgg" and "Tween to field egg, steal, run back. Speed = WalkSpeed x 0.9 (cap 300)." or "Collect, sell, buy, and clear zones",
+  Icon = MAP_NAME == "StealEgg" and "Lucide:egg" or "Lucide:hand",
   Flag = "autoHandCollect",
   Default = getgenv().NiaAutoFarm == true,
   Callback = setFarm,
