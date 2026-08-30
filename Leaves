@@ -490,13 +490,10 @@ local function priorZonesDone(name)
 end
 
 local function zonePrereqReady(name)
-	if not name or not priorZonesDone(name) then
+	if not name then
 		return false
 	end
 	local p = ZONE_PREREQ[name]
-	if not p then
-		return true
-	end
 	if p == "ALL" then
 		for _, n in ipairs(ZONE_ORDER) do
 			if n ~= name then
@@ -508,12 +505,15 @@ local function zonePrereqReady(name)
 		end
 		return true
 	end
-	for _, n in ipairs(p) do
-		if not zoneDone(n) then
-			return false
+	if type(p) == "table" then
+		for _, n in ipairs(p) do
+			if not zoneDone(n) then
+				return false
+			end
 		end
+		return true
 	end
-	return true
+	return priorZonesDone(name)
 end
 
 local function allZonesDone()
@@ -541,7 +541,7 @@ local function zoneProgress(name)
 end
 
 local function leafVisible(p)
-	return p:IsA("BasePart") and p.Transparency < 0.2
+	return p:IsA("BasePart") and p.Transparency < 0.92
 end
 
 local usedIds = {}
@@ -553,12 +553,32 @@ local lastAlsT = 0
 local lastAlsN = 0
 local lastClearName = ""
 local leftoverIdx = 0
+local leftoverSkip = {}
+local leftoverCache, leftoverCacheAt, leftoverCacheZone = {}, 0, ""
 local lastTeleAt = 0
 local overlap = OverlapParams.new()
 overlap.FilterType = Enum.RaycastFilterType.Include
 
 local function leafFolder()
 	return workspace:FindFirstChild("Leaves")
+end
+
+local function leafFolders()
+	local out = {}
+	local a = leafFolder()
+	if a then
+		out[1] = a
+	end
+	local map = workspace:FindFirstChild("Map")
+	if map then
+		for _, n in ipairs({ "FallingLeaves", "CollectionLeaves", "ActiveLeaves" }) do
+			local f = map:FindFirstChild(n)
+			if f then
+				out[#out + 1] = f
+			end
+		end
+	end
+	return out
 end
 
 local function nearbyParts(radius)
@@ -581,7 +601,7 @@ local function nearbyParts(radius)
 	return out
 end
 
-local function oneZoneLeaf(zoneName)
+local function oneZoneLeaf(zoneName, pad)
 	local folder = leafFolder()
 	local zone = zoneModel(zoneName)
 	if not folder then
@@ -591,7 +611,8 @@ local function oneZoneLeaf(zoneName)
 	local hits
 	if zone then
 		local cf, size = zone:GetBoundingBox()
-		hits = workspace:GetPartBoundsInBox(cf, size + Vector3.new(6, 12, 6), overlap)
+		pad = pad or Vector3.new(18, 36, 18)
+		hits = workspace:GetPartBoundsInBox(cf, size + pad, overlap)
 	else
 		local root = hrp()
 		if not root then
@@ -607,7 +628,99 @@ local function oneZoneLeaf(zoneName)
 	return nil
 end
 
-local function leafSim()
+local leafSim, idTable
+
+local function leftoverInside(model, pos)
+	if not (model and pos) then
+		return false
+	end
+	for _, child in model:GetChildren() do
+		if child:IsA("BasePart") then
+			local v = child.CFrame:PointToObjectSpace(pos)
+			if math.abs(v.X) <= child.Size.X / 2 + 22
+				and math.abs(v.Z) <= child.Size.Z / 2 + 22
+				and v.Y >= -child.Size.Y / 2 - 16
+				and v.Y <= child.Size.Y / 2 + 48 then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function leftoverZoneLeaves(zoneName)
+	if leftoverCacheZone == zoneName and os.clock() - leftoverCacheAt < 1.2 then
+		return leftoverCache
+	end
+	local zone = zoneModel(zoneName)
+	local folder = leafFolder()
+	local seen, out = {}, {}
+	local function add(p)
+		if not p or seen[p] or leftoverSkip[p] then
+			return
+		end
+		if not p:IsA("BasePart") or p.Transparency >= 0.95 or p.Size.Magnitude < 0.12 then
+			return
+		end
+		seen[p] = true
+		out[#out + 1] = p
+	end
+	if folder and zone then
+		overlap.FilterDescendantsInstances = { folder }
+		local cf, size = zone:GetBoundingBox()
+		for _, p in workspace:GetPartBoundsInBox(cf, size + Vector3.new(48, 72, 48), overlap) do
+			if leafVisible(p) then
+				add(p)
+			end
+		end
+	end
+	if #out == 0 then
+		local map = idTable(leafSim())
+		if map then
+			for p, id in pairs(map) do
+				if typeof(p) == "Instance" and p:IsA("BasePart") and type(id) == "number" then
+					local z = p:GetAttribute("Zone") or p:GetAttribute("Location")
+					if z == zoneName or leftoverInside(zone, p.Position) then
+						add(p)
+					end
+				end
+			end
+		end
+	end
+	if #out == 0 then
+		for _, f in leafFolders() do
+			for _, inst in f:GetDescendants() do
+				if inst:IsA("BasePart") then
+					local z = inst:GetAttribute("Zone") or inst:GetAttribute("Location")
+					if z == zoneName then
+						add(inst)
+					elseif not z and leftoverInside(zone, inst.Position) then
+						add(inst)
+					end
+				end
+			end
+		end
+	end
+	leftoverCache, leftoverCacheAt, leftoverCacheZone = out, os.clock(), zoneName
+	return out
+end
+
+local function leftoverZoneLeaf(zoneName)
+	local list = leftoverZoneLeaves(zoneName)
+	if #list == 0 then
+		return nil
+	end
+	for _ = 1, #list do
+		leftoverIdx = leftoverIdx % #list + 1
+		local p = list[leftoverIdx]
+		if p and p.Parent and not leftoverSkip[p] then
+			return p
+		end
+	end
+	return nil
+end
+
+function leafSim()
 	local m = lp:FindFirstChild("PlayerScripts")
 	m = m and m:FindFirstChild("LeafSim")
 	if not m then
@@ -617,7 +730,7 @@ local function leafSim()
 	return ok and api or nil
 end
 
-local function idTable(api)
+function idTable(api)
 	if not (api and type(api.collectMany) == "function") then
 		return nil
 	end
@@ -649,9 +762,8 @@ local function fireIds(ids)
 	return #ids
 end
 
-local function grab(need)
-	local parts = nearbyParts(22)
-	if #parts == 0 then
+local function grabParts(parts, need)
+	if not parts or #parts == 0 then
 		return 0
 	end
 	local take = math.max(1, math.min(need or BATCH, BATCH, #parts))
@@ -705,11 +817,39 @@ local function grab(need)
 	return after - before
 end
 
+local function grab(need)
+	return grabParts(nearbyParts(22), need)
+end
+
+local function grabLeftover(part, need)
+	if not part then
+		return 0
+	end
+	pcall(function()
+		part.CanQuery = true
+	end)
+	tpTo(part.Position)
+	task.wait(0.1)
+	local extra = nearbyParts(36)
+	local parts = { part }
+	for _, p in extra do
+		if p ~= part then
+			parts[#parts + 1] = p
+		end
+	end
+	return grabParts(parts, need)
+end
+
 local function teleToZoneLeaf(zoneName)
-	if os.clock() - lastTeleAt < 0.7 then
+	if not zoneName or os.clock() - lastTeleAt < 0.55 then
 		return false
 	end
+	local got, tot = zoneProgress(zoneName)
+	local remain = tot > 0 and (tot - got) or 99
 	local p = oneZoneLeaf(zoneName)
+	if not p and remain <= 4 then
+		p = leftoverZoneLeaf(zoneName)
+	end
 	if not p then
 		return false
 	end
@@ -1111,13 +1251,18 @@ local function peekClearZone()
 	if allZonesDone() then
 		return nil
 	end
+	local fallback
 	for _, name in ipairs(ZONE_ORDER) do
 		local z = zoneModel(name)
 		if z and z:GetAttribute("GoalTotal") and not zoneDone(name) and zonePrereqReady(name) then
-			return name
+			if stallName == name and os.clock() - stallT > 5 then
+				fallback = fallback or name
+			else
+				return name
+			end
 		end
 	end
-	return nil
+	return fallback
 end
 
 local function nextClearZone()
@@ -1466,12 +1611,39 @@ local function handCollectTick()
 		return
 	end
 	local n = grab(need)
-	if n == 0 and teleToZoneLeaf(zonePref) then
-		task.wait(0.08)
-		n = grab(need)
-		if os.clock() - lastTelePrint > 4 then
-			lastTelePrint = os.clock()
-			print("[HandCollect] tele+grab", zonePref or "", n)
+	if n == 0 then
+		local got, tot = 0, 0
+		if zonePref then
+			got, tot = zoneProgress(zonePref)
+			if stallName ~= zonePref or stallAt ~= got then
+				stallName, stallAt, stallT = zonePref, got, os.clock()
+				leftoverIdx = 0
+				table.clear(leftoverSkip)
+				leftoverCache, leftoverCacheAt, leftoverCacheZone = {}, 0, ""
+			end
+			if os.clock() - stallT > 2 then
+				table.clear(usedIds)
+				failStreak = 0
+				local leftover = leftoverZoneLeaf(zonePref)
+				if leftover then
+					n = grabLeftover(leftover, need)
+					if n == 0 then
+						leftoverSkip[leftover] = true
+					end
+					if os.clock() - lastTelePrint > 3 then
+						lastTelePrint = os.clock()
+						print("[HandCollect] leftover", zonePref, got .. "/" .. tot)
+					end
+				end
+			end
+		end
+		if n == 0 and teleToZoneLeaf(zonePref) then
+			task.wait(0.08)
+			n = grab(need)
+			if os.clock() - lastTelePrint > 4 then
+				lastTelePrint = os.clock()
+				print("[HandCollect] tele+grab", zonePref or "", n)
+			end
 		end
 	elseif n > 0 and os.clock() - lastGrabPrint > 2 then
 		lastGrabPrint = os.clock()
