@@ -1039,7 +1039,7 @@ local function zonesLeft()
 	return left, total
 end
 
-getgenv().RefreshHandCollectStatus = function()
+local function refreshHandCollectStatus()
 	local st = getgenv().HandCollectStatus
 	local cur, cap = bag()
 	st.leaves = cur
@@ -1093,7 +1093,7 @@ local function handCollectTick()
 			zonePref = q.zone
 		end
 	end
-	local st = getgenv().RefreshHandCollectStatus()
+	local st = refreshHandCollectStatus()
 	st.zone = zonePref or st.zone
 	local sellNow = cap ~= math.huge and cur >= cap and cur > 0
 	if q and q.id == "SellLeaves" and cur > 0 then
@@ -1120,7 +1120,7 @@ local function handCollectTick()
 	end
 end
 
-getgenv().StartHandCollect = function()
+local function startHandCollect()
 	if getgenv().HandCollectRunning then
 		return
 	end
@@ -1140,10 +1140,14 @@ getgenv().StartHandCollect = function()
 	end)
 end
 
-getgenv().StopHandCollectRun = function()
+local function stopHandCollectRun()
 	getgenv().StopHandCollect = true
 end
 
+getgenv().RefreshHandCollectStatus = refreshHandCollectStatus
+getgenv().StartHandCollect = startHandCollect
+getgenv().StopHandCollectRun = stopHandCollectRun
+
 if not getgenv().HandCollectHub then
-	getgenv().StartHandCollect()
+	startHandCollect()
 end
