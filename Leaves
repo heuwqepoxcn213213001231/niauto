@@ -465,7 +465,7 @@ end
 
 local usedIds = {}
 local failStreak = 0
-local BATCH = 120
+local BATCH = 75
 local lastTelePrint = 0
 local lastGrabPrint = 0
 local lastAlsT = 0
