@@ -1,9 +1,8 @@
--- Steal An Egg — field steal via Tween. Cap = game WalkSpeed (max 300).
+-- Steal An Egg — field steal. Fly CFrame 300 studs/s, steal, fly home.
 -- Hub API: StartHandCollect / StopHandCollectRun / RefreshHandCollectStatus
 -- Tat: getgenv().StopHandCollect = true
 
 local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local RS = game:GetService("ReplicatedStorage")
 
@@ -15,8 +14,7 @@ if not lp then
 	lp = Players.LocalPlayer
 end
 
-local GAME_MAX_WALK = 300
-local MIN_TWEEN = 100
+local FLY_SPEED = 300
 local STEAL_RANGE = 7
 
 local EggState, PlotState, SlotId, GuardGeom, AreaEggs
@@ -62,9 +60,7 @@ local function hum()
 end
 
 local function allowedSpeed()
-	local h = hum()
-	local ws = (h and h.WalkSpeed) or 16
-	return math.clamp(math.max(MIN_TWEEN, ws), MIN_TWEEN, GAME_MAX_WALK)
+	return FLY_SPEED
 end
 
 local function groundY(pos)
@@ -84,35 +80,48 @@ end
 
 local function tweenTo(dest)
 	local root = hrp()
+	local h = hum()
 	if not (root and dest) then
 		return false
 	end
-	local goal = Vector3.new(dest.X, groundY(dest), dest.Z)
-	local dist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(goal.X, 0, goal.Z)).Magnitude
+	local goal = Vector3.new(dest.X, groundY(dest) + 2, dest.Z)
+	local start = root.Position
+	local flat = Vector3.new(goal.X - start.X, 0, goal.Z - start.Z)
+	local dist = flat.Magnitude
 	if dist < 1.2 then
 		return true
 	end
-	local speed = allowedSpeed()
-	local t = math.clamp(dist / speed, 0.05, 12)
-	local look = CFrame.lookAt(root.Position, Vector3.new(goal.X, root.Position.Y, goal.Z))
-	root.CFrame = CFrame.new(root.Position) * look.Rotation
-	local tw = TweenService:Create(root, TweenInfo.new(t, Enum.EasingStyle.Linear, Enum.EasingDirection.Out), {
-		CFrame = CFrame.new(goal) * look.Rotation,
-	})
-	tw:Play()
-	local done = false
-	tw.Completed:Once(function()
-		done = true
-	end)
-	local t0 = os.clock()
-	while not done and os.clock() - t0 < t + 0.35 do
-		if getgenv().StopHandCollect then
-			tw:Cancel()
-			return false
-		end
-		RunService.Heartbeat:Wait()
+	local wasAnchored = root.Anchored
+	local wasPlatform = h and h.PlatformStand
+	root.Anchored = true
+	if h then
+		h.PlatformStand = true
+		h.AutoRotate = false
 	end
-	return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(goal.X, 0, goal.Z)).Magnitude < 5
+	local dir = flat.Unit
+	local look = CFrame.lookAt(Vector3.zero, Vector3.new(dir.X, 0, dir.Z))
+	local traveled = 0
+	local ok = true
+	while traveled < dist do
+		if getgenv().StopHandCollect then
+			ok = false
+			break
+		end
+		local dt = RunService.Heartbeat:Wait()
+		traveled = math.min(dist, traveled + FLY_SPEED * dt)
+		local alpha = traveled / dist
+		local pos = start:Lerp(goal, alpha)
+		root.CFrame = CFrame.new(pos) * look.Rotation
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
+	root.CFrame = CFrame.new(goal) * look.Rotation
+	root.Anchored = wasAnchored
+	if h then
+		h.PlatformStand = wasPlatform or false
+		h.AutoRotate = true
+	end
+	return ok
 end
 
 local function stealPromptNear(pos)
@@ -341,7 +350,7 @@ local function refresh()
 	st.bag = tostring(math.floor(allowedSpeed())) .. " / 300"
 	st.quest = st.zone
 	st.questName = "Steal field"
-	st.als = "tween " .. tostring(MIN_TWEEN) .. "+"
+	st.als = "fly 300"
 	local n = #fieldList()
 	st.zones = tostring(n) .. " eggs"
 	return st
@@ -354,7 +363,7 @@ local function start()
 	getgenv().StopHandCollect = false
 	getgenv().HandCollectRunning = true
 	getgenv().HandCollectStatus.running = true
-	print("[StealField] tween steal | speed", MIN_TWEEN, "–", GAME_MAX_WALK)
+	print("[StealField] fly steal | speed", FLY_SPEED)
 	task.spawn(function()
 		while not getgenv().StopHandCollect do
 			local ok, err = pcall(tick)
