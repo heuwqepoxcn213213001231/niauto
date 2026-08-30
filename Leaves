@@ -471,7 +471,7 @@ end
 
 local usedIds = {}
 local failStreak = 0
-local BATCH = 60
+local BATCH = 90
 local lastTelePrint = 0
 local lastGrabPrint = 0
 local lastAlsT = 0
@@ -541,7 +541,7 @@ local function grab(need, zoneName)
 	local take = math.max(1, math.min(need, BATCH))
 	local parts, ids = {}, {}
 	for _, e in list do
-		if e.p and e.p.Parent and e.d <= 16 then
+		if e.p and e.p.Parent and e.d <= 22 then
 			local id = map and map[e.p]
 			if type(id) == "number" and not usedIds[id] then
 				parts[#parts + 1] = e.p
@@ -564,8 +564,8 @@ local function grab(need, zoneName)
 	fireIds(ids)
 	local t0 = os.clock()
 	repeat
-		task.wait(0.02)
-	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.85
+		task.wait()
+	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.28
 	local after = tonumber(lp:GetAttribute("Leaves")) or 0
 	if after <= before then
 		failStreak = failStreak + 1
@@ -1236,8 +1236,11 @@ local function questCount()
 end
 
 local function leftoverCount(zoneName)
+	if getgenv().HandCollectRunning ~= true then
+		return lastAlsN
+	end
 	local now = os.clock()
-	if now - lastAlsT < 1.2 then
+	if now - lastAlsT < 2 then
 		return lastAlsN
 	end
 	local list = zoneName and huntLeaves(zoneName) or openLeaves()
@@ -1286,11 +1289,16 @@ local function refreshHandCollectStatus()
 		st.questName = "Done"
 		st.questProg = "done"
 	end
-	local zonePref = peekClearZone()
-	st.zone = zonePref or "—"
-	st.als = leftoverCount(zonePref) .. " left"
-	local zLeft = zonesLeft()
-	st.zones = zLeft .. " left"
+	if getgenv().HandCollectRunning == true then
+		local zonePref = peekClearZone()
+		st.zone = zonePref or "—"
+		st.als = leftoverCount(zonePref) .. " left"
+		st.zones = zonesLeft() .. " left"
+	else
+		st.zone = st.zone or "—"
+		st.als = "—"
+		st.zones = st.zones or "—"
+	end
 	st.place = MAP_NAME
 	st.map = MAP_NAME
 	st.placeId = game.PlaceId
@@ -1362,7 +1370,7 @@ local function startHandCollect()
 	task.spawn(function()
 		while not getgenv().StopHandCollect do
 			handCollectTick()
-			task.wait(0.12)
+			task.wait(0.04)
 		end
 		getgenv().HandCollectRunning = false
 		getgenv().HandCollectStatus.running = false
