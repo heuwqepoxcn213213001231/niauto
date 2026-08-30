@@ -420,58 +420,68 @@ local function leafVisible(p)
 	return p:IsA("BasePart") and p.Transparency < 0.2
 end
 
-local leafCache, leafCacheAt, leafCacheKey = nil, 0, ""
-
-local function bustLeafCache()
-	leafCache, leafCacheAt, leafCacheKey = nil, 0, ""
-end
-
-local function openLeaves(zoneName, maxOut, fresh)
-	maxOut = maxOut or 10
-	local key = tostring(zoneName or "") .. ":" .. tostring(maxOut)
-	local now = os.clock()
-	if not fresh and leafCache and leafCacheKey == key and now - leafCacheAt < 0.28 then
-		return leafCache
-	end
-	local folder = workspace:FindFirstChild("Leaves")
-	if not folder then
-		return {}
-	end
-	local origin = hrp()
-	origin = origin and origin.Position or Vector3.zero
-	local zone = zoneModel(zoneName)
-	local list = {}
-	for _, p in folder:GetChildren() do
-		if leafVisible(p) then
-			local ok = not zone
-			if zone then
-				ok = distOutsideFloor(zone, p.Position) <= maxOut
-			end
-			if ok then
-				list[#list + 1] = { p = p, d = (p.Position - origin).Magnitude }
-			end
-		end
-	end
-	table.sort(list, function(a, b)
-		return a.d < b.d
-	end)
-	leafCache, leafCacheAt, leafCacheKey = list, now, key
-	return list
-end
-
-local function huntLeaves(zoneName, fresh)
-	return openLeaves(zoneName, 8, fresh)
-end
-
 local usedIds = {}
 local failStreak = 0
-local BATCH = 90
+local BATCH = 80
 local lastTelePrint = 0
 local lastGrabPrint = 0
 local lastAlsT = 0
 local lastAlsN = 0
 local lastClearName = ""
 local leftoverIdx = 0
+local lastTeleAt = 0
+local overlap = OverlapParams.new()
+overlap.FilterType = Enum.RaycastFilterType.Include
+
+local function leafFolder()
+	return workspace:FindFirstChild("Leaves")
+end
+
+local function nearbyParts(radius)
+	local folder = leafFolder()
+	local root = hrp()
+	if not (folder and root) then
+		return {}
+	end
+	overlap.FilterDescendantsInstances = { folder }
+	local hits = workspace:GetPartBoundsInRadius(root.Position, radius or 20, overlap)
+	local out = {}
+	for _, p in hits do
+		if leafVisible(p) then
+			out[#out + 1] = p
+			if #out >= BATCH then
+				break
+			end
+		end
+	end
+	return out
+end
+
+local function oneZoneLeaf(zoneName)
+	local folder = leafFolder()
+	local zone = zoneModel(zoneName)
+	if not folder then
+		return nil
+	end
+	overlap.FilterDescendantsInstances = { folder }
+	local hits
+	if zone then
+		local cf, size = zone:GetBoundingBox()
+		hits = workspace:GetPartBoundsInBox(cf, size + Vector3.new(6, 12, 6), overlap)
+	else
+		local root = hrp()
+		if not root then
+			return nil
+		end
+		hits = workspace:GetPartBoundsInRadius(root.Position, 80, overlap)
+	end
+	for _, p in hits do
+		if leafVisible(p) then
+			return p
+		end
+	end
+	return nil
+end
 
 local function leafSim()
 	local m = lp:FindFirstChild("PlayerScripts")
@@ -491,12 +501,14 @@ local function idTable(api)
 	if type(getup) ~= "function" then
 		return nil
 	end
-	local ok, a, b = pcall(getup, api.collectMany, 3)
-	if ok and type(b) == "table" then
-		return b
-	end
-	if ok and type(a) == "table" then
-		return a
+	for i = 1, 8 do
+		local ok, a, b = pcall(getup, api.collectMany, i)
+		if ok and type(b) == "table" then
+			return b
+		end
+		if ok and type(a) == "table" then
+			return a
+		end
 	end
 	return nil
 end
@@ -513,58 +525,50 @@ local function fireIds(ids)
 	return #ids
 end
 
-local function wipeGhosts(list, map)
-	local n = 0
-	for _, e in list do
-		local id = map and map[e.p]
-		if type(id) == "number" and usedIds[id] and e.p.Parent then
-			e.p:Destroy()
-			n = n + 1
-		end
-	end
-	return n
-end
-
-local function grab(need, zoneName)
-	local list = zoneName and huntLeaves(zoneName) or openLeaves(nil, 8)
-	if #list == 0 then
+local function grab(need)
+	local parts = nearbyParts(22)
+	if #parts == 0 then
 		return 0
+	end
+	local take = math.max(1, math.min(need or BATCH, BATCH, #parts))
+	if take < #parts then
+		local slim = {}
+		for i = 1, take do
+			slim[i] = parts[i]
+		end
+		parts = slim
 	end
 	local api = leafSim()
 	local map = idTable(api)
-	local take = math.max(1, math.min(need, BATCH))
-	local parts, ids = {}, {}
-	for _, e in list do
-		if e.p and e.p.Parent and e.d <= 36 then
-			parts[#parts + 1] = e.p
-			local id = map and map[e.p]
+	local ids = {}
+	if map then
+		for _, p in parts do
+			local id = map[p]
 			if type(id) == "number" and not usedIds[id] then
 				ids[#ids + 1] = id
 			end
 		end
-		if #parts >= take then
-			break
-		end
-	end
-	if #parts == 0 then
-		return 0
 	end
 	local before = tonumber(lp:GetAttribute("Leaves")) or 0
 	if api and type(api.collectMany) == "function" then
-		pcall(api.collectMany, parts)
-	elseif #ids > 0 then
+		local ok = pcall(function()
+			api.collectMany(parts)
+		end)
+		if not ok then
+			pcall(api.collectMany, api, parts)
+		end
+	end
+	if #ids > 0 then
 		fireIds(ids)
-	else
-		return 0
 	end
 	local t0 = os.clock()
 	repeat
 		task.wait()
-	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.35
+	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.4
 	local after = tonumber(lp:GetAttribute("Leaves")) or 0
 	if after <= before then
 		failStreak = failStreak + 1
-		if failStreak >= 8 then
+		if failStreak >= 10 then
 			table.clear(usedIds)
 			failStreak = 0
 		end
@@ -574,16 +578,19 @@ local function grab(need, zoneName)
 	for _, id in ids do
 		usedIds[id] = true
 	end
-	bustLeafCache()
 	return after - before
 end
 
-local function teleToOpenLeaf(zoneName)
-	local list = zoneName and huntLeaves(zoneName) or openLeaves(nil, 8)
-	if #list == 0 then
+local function teleToZoneLeaf(zoneName)
+	if os.clock() - lastTeleAt < 0.7 then
 		return false
 	end
-	return tpTo(list[1].p.Position)
+	local p = oneZoneLeaf(zoneName)
+	if not p then
+		return false
+	end
+	lastTeleAt = os.clock()
+	return tpTo(p.Position)
 end
 
 local function dumpsterNone()
@@ -687,8 +694,8 @@ local function sell()
 			root.CFrame = saved
 		end
 	end)
-	task.wait(0.35)
-	teleToOpenLeaf(true, lastClearName ~= "" and lastClearName or nil)
+	task.wait(0.25)
+	teleToZoneLeaf(lastClearName ~= "" and lastClearName or nil)
 	return left <= 0
 end
 
@@ -1187,17 +1194,7 @@ local function questCount()
 	return n
 end
 
-local function leftoverCount(zoneName)
-	if getgenv().HandCollectRunning ~= true then
-		return lastAlsN
-	end
-	local now = os.clock()
-	if now - lastAlsT < 2 then
-		return lastAlsN
-	end
-	local list = zoneName and huntLeaves(zoneName) or openLeaves()
-	lastAlsT = now
-	lastAlsN = #list
+local function leftoverCount()
 	return lastAlsN
 end
 
@@ -1291,17 +1288,15 @@ local function handCollectTick()
 	if need <= 0 then
 		return
 	end
-	local n = grab(need, zonePref)
-	if n == 0 then
-		if teleToOpenLeaf(zonePref) then
-			task.wait(0.06)
-			n = grab(need, zonePref)
-			if os.clock() - lastTelePrint > 3 then
-				lastTelePrint = os.clock()
-				print("[HandCollect] tele+grab", zonePref or "", n)
-			end
+	local n = grab(need)
+	if n == 0 and teleToZoneLeaf(zonePref) then
+		task.wait(0.08)
+		n = grab(need)
+		if os.clock() - lastTelePrint > 4 then
+			lastTelePrint = os.clock()
+			print("[HandCollect] tele+grab", zonePref or "", n)
 		end
-	elseif os.clock() - lastGrabPrint > 2 then
+	elseif n > 0 and os.clock() - lastGrabPrint > 2 then
 		lastGrabPrint = os.clock()
 		print("[HandCollect]", cur + n, "/", cap == math.huge and "inf" or cap, "+", n)
 	end
@@ -1319,7 +1314,7 @@ local function startHandCollect()
 	task.spawn(function()
 		while not getgenv().StopHandCollect do
 			handCollectTick()
-			task.wait(0.04)
+			task.wait(0.08)
 		end
 		getgenv().HandCollectRunning = false
 		getgenv().HandCollectStatus.running = false
