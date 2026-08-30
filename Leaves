@@ -106,6 +106,57 @@ if MAP_NAME == "Lobby" then
 	return
 end
 
+local function unlockThirdPerson()
+	local UIS = game:GetService("UserInputService")
+	local function apply()
+		pcall(function()
+			lp.CameraMode = Enum.CameraMode.Classic
+			lp.CameraMinZoomDistance = 0.5
+			lp.CameraMaxZoomDistance = 128
+		end)
+		pcall(function()
+			local sp = game:GetService("StarterPlayer")
+			sp.CameraMode = Enum.CameraMode.Classic
+			sp.CameraMinZoomDistance = 0.5
+			sp.CameraMaxZoomDistance = 128
+		end)
+		pcall(function()
+			game:GetService("RunService"):UnbindFromRenderStep("FirstPersonHeadBob")
+		end)
+		pcall(function()
+			local ps = lp:FindFirstChild("PlayerScripts")
+			local fp = ps and ps:FindFirstChild("FirstPersonCamera")
+			if fp and fp:IsA("LocalScript") then
+				fp.Disabled = true
+			end
+		end)
+		local cam = workspace.CurrentCamera
+		local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+		if cam then
+			cam.CameraType = Enum.CameraType.Custom
+			if hum then
+				cam.CameraSubject = hum
+				hum.CameraOffset = Vector3.zero
+			end
+		end
+		UIS.MouseBehavior = Enum.MouseBehavior.Default
+		UIS.MouseIconEnabled = true
+	end
+	apply()
+	if not getgenv().NiaCamHook then
+		getgenv().NiaCamHook = true
+		lp:GetPropertyChangedSignal("CameraMode"):Connect(function()
+			if lp.CameraMode ~= Enum.CameraMode.Classic then
+				lp.CameraMode = Enum.CameraMode.Classic
+			end
+		end)
+		lp.CharacterAdded:Connect(function()
+			task.defer(apply)
+		end)
+	end
+end
+unlockThirdPerson()
+
 local Remotes = RS:WaitForChild("Remotes")
 local CollectLeaf = Remotes:WaitForChild("CollectLeaf")
 local EquipTool = Remotes:WaitForChild("EquipTool")
