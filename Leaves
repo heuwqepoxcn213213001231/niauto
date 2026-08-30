@@ -1039,7 +1039,7 @@ local function zonesLeft()
 	return left, total
 end
 
-function getgenv().RefreshHandCollectStatus()
+getgenv().RefreshHandCollectStatus = function()
 	local st = getgenv().HandCollectStatus
 	local cur, cap = bag()
 	st.leaves = cur
@@ -1120,7 +1120,7 @@ local function handCollectTick()
 	end
 end
 
-function getgenv().StartHandCollect()
+getgenv().StartHandCollect = function()
 	if getgenv().HandCollectRunning then
 		return
 	end
@@ -1140,7 +1140,7 @@ function getgenv().StartHandCollect()
 	end)
 end
 
-function getgenv().StopHandCollectRun()
+getgenv().StopHandCollectRun = function()
 	getgenv().StopHandCollect = true
 end
 
