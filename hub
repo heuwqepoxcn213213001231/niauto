@@ -107,7 +107,28 @@ if not src then
 end
 local NiaHub = loadstring(src)()
 NiaHub:PreloadIcons({ "Lucide", "Material", "Phosphor", "SF" })
-NiaHub:SetScaleRange(0.75, 1.35)
+NiaHub:SetScaleRange(1, 1.35)
+
+local function bumpHubScale()
+ NiaHub:SetScaleRange(1, 1.35)
+end
+
+pcall(function()
+ local cam = workspace.CurrentCamera
+ if cam then
+  cam:GetPropertyChangedSignal("ViewportSize"):Connect(bumpHubScale)
+ end
+ workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+  local nextCam = workspace.CurrentCamera
+  if nextCam then
+   nextCam:GetPropertyChangedSignal("ViewportSize"):Connect(bumpHubScale)
+  end
+  bumpHubScale()
+ end)
+end)
+pcall(function()
+ game:GetService("UserInputService").WindowFocused:Connect(bumpHubScale)
+end)
 
 local function httpGet(url)
  local ok, body = pcall(function()
@@ -190,6 +211,13 @@ local Window = NiaHub:CreateWindow({
  Credits = false,
  NotifyKeybind = false,
 })
+
+pcall(function()
+ local gui = Window._gui
+ if gui then
+  gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(bumpHubScale)
+ end
+end)
 
 NiaHub:Notify({
  Title = "Nia Hub",
