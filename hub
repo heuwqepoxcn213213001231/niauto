@@ -219,9 +219,58 @@ pcall(function()
  end
 end)
 
+do
+ local UIS = game:GetService("UserInputService")
+ local root = NiaHub._Root
+ if not root then
+  local gui = Window._gui
+  root = gui and (gui:FindFirstAncestorWhichIsA("LayerCollector") or gui.Parent)
+ end
+ if root and not root:FindFirstChild("MobileToggleButton") then
+  local btn = Instance.new("ImageButton")
+  btn.Name = "MobileToggleButton"
+  btn.BackgroundTransparency = 1
+  btn.BorderSizePixel = 0
+  btn.AnchorPoint = Vector2.new(0, 0)
+  btn.Position = UDim2.fromOffset(16, 80)
+  btn.Size = UDim2.fromOffset(45, 45)
+  btn.Image = "rbxassetid://136834285051667"
+  btn.ZIndex = 100
+  btn.Parent = root
+  local corner = Instance.new("UICorner")
+  corner.CornerRadius = UDim.new(1, 0)
+  corner.Parent = btn
+  local dragInput, dragStart, startPos, dragged
+  btn.InputBegan:Connect(function(input)
+   if input.UserInputType ~= Enum.UserInputType.Touch
+    and input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+    return
+   end
+   dragInput, dragStart, startPos, dragged = input, input.Position, btn.Position, false
+  end)
+  UIS.InputChanged:Connect(function(input)
+   if input ~= dragInput or not dragStart then return end
+   local delta = input.Position - dragStart
+   if not dragged and delta.Magnitude > 8 then dragged = true end
+   if not dragged then return end
+   btn.Position = UDim2.new(
+    startPos.X.Scale, startPos.X.Offset + delta.X,
+    startPos.Y.Scale, startPos.Y.Offset + delta.Y
+   )
+  end)
+  UIS.InputEnded:Connect(function(input)
+   if input ~= dragInput then return end
+   dragInput, dragStart = nil, nil
+   if not dragged then
+    Window:Toggle()
+   end
+  end)
+ end
+end
+
 NiaHub:Notify({
  Title = "Nia Hub",
- Text = (MAP_LABEL[MAP_NAME] or MAP_NAME) .. " · RightShift to hide.",
+ Text = (MAP_LABEL[MAP_NAME] or MAP_NAME) .. " · Float button or RightShift to hide.",
  Type = "success",
  Duration = 4,
 })
