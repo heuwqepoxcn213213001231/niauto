@@ -460,13 +460,7 @@ local function openLeaves(zoneName, maxOut, fresh)
 end
 
 local function huntLeaves(zoneName, fresh)
-	for _, maxOut in ipairs({ 3, 6, 10 }) do
-		local list = openLeaves(zoneName, maxOut, fresh)
-		if #list > 0 then
-			return list
-		end
-	end
-	return {}
+	return openLeaves(zoneName, 8, fresh)
 end
 
 local usedIds = {}
@@ -532,7 +526,7 @@ local function wipeGhosts(list, map)
 end
 
 local function grab(need, zoneName)
-	local list = zoneName and huntLeaves(zoneName, true) or openLeaves(nil, 10, true)
+	local list = zoneName and huntLeaves(zoneName) or openLeaves(nil, 8)
 	if #list == 0 then
 		return 0
 	end
@@ -541,35 +535,39 @@ local function grab(need, zoneName)
 	local take = math.max(1, math.min(need, BATCH))
 	local parts, ids = {}, {}
 	for _, e in list do
-		if e.p and e.p.Parent and e.d <= 22 then
+		if e.p and e.p.Parent and e.d <= 36 then
+			parts[#parts + 1] = e.p
 			local id = map and map[e.p]
 			if type(id) == "number" and not usedIds[id] then
-				parts[#parts + 1] = e.p
 				ids[#ids + 1] = id
 			end
 		end
-		if #ids >= take then
+		if #parts >= take then
 			break
 		end
 	end
-	if #ids == 0 then
-		if failStreak >= 6 then
-			table.clear(usedIds)
-			failStreak = 0
-		end
-		bustLeafCache()
+	if #parts == 0 then
 		return 0
 	end
 	local before = tonumber(lp:GetAttribute("Leaves")) or 0
-	fireIds(ids)
+	if api and type(api.collectMany) == "function" then
+		pcall(api.collectMany, parts)
+	elseif #ids > 0 then
+		fireIds(ids)
+	else
+		return 0
+	end
 	local t0 = os.clock()
 	repeat
 		task.wait()
-	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.28
+	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.35
 	local after = tonumber(lp:GetAttribute("Leaves")) or 0
 	if after <= before then
 		failStreak = failStreak + 1
-		bustLeafCache()
+		if failStreak >= 8 then
+			table.clear(usedIds)
+			failStreak = 0
+		end
 		return 0
 	end
 	failStreak = 0
@@ -580,24 +578,8 @@ local function grab(need, zoneName)
 	return after - before
 end
 
-local function teleToOpenLeaf(force, zoneName)
-	local list = zoneName and huntLeaves(zoneName, true) or openLeaves(nil, 10, true)
-	if #list == 0 then
-		return false
-	end
-	local api = leafSim()
-	local map = idTable(api)
-	for _, e in list do
-		local id = map and map[e.p]
-		if type(id) ~= "number" or not usedIds[id] then
-			if force or e.d > 8 then
-				return tpTo(e.p.Position)
-			end
-			return false
-		end
-	end
-	wipeGhosts(list, map)
-	list = zoneName and huntLeaves(zoneName) or openLeaves()
+local function teleToOpenLeaf(zoneName)
+	local list = zoneName and huntLeaves(zoneName) or openLeaves(nil, 8)
 	if #list == 0 then
 		return false
 	end
@@ -959,44 +941,14 @@ local function nextClearZone()
 	if not name then
 		return nil
 	end
-	local z = zoneModel(name)
 	if name == "Garage" then
 		pressGarage()
 	end
 	openZoneDoor(name)
-	local a, b, w, wt = zoneProgress(name)
-	if stallName ~= name or stallAt ~= a then
-		stallName, stallAt, stallT = name, a, os.clock()
-		leftoverIdx = 0
-	elseif a < b and os.clock() - stallT > 8 then
-		stallT = os.clock()
-		table.clear(usedIds)
-		failStreak = 0
-		bustLeafCache()
-		local hunt = huntLeaves(name)
-		if #hunt > 0 then
-			tpTo(hunt[1].p.Position)
-			print("[HandCollect] leftover", name, #hunt)
-		elseif z then
-			local floors = {}
-			for _, c in z:GetChildren() do
-				if c:IsA("BasePart") then
-					floors[#floors + 1] = c
-				end
-			end
-			leftoverIdx = leftoverIdx + 1
-			local part = floors[((leftoverIdx - 1) % math.max(#floors, 1)) + 1]
-			if part then
-				tpTo(part.Position)
-			else
-				tpTo(z:GetPivot().Position)
-			end
-			print("[HandCollect] leftover walk", name, leftoverIdx)
-		end
-	end
-	if os.clock() - lastClearPrint > 6 or lastClearName ~= name then
+	if os.clock() - lastClearPrint > 8 or lastClearName ~= name then
 		lastClearPrint = os.clock()
 		lastClearName = name
+		local a, b, w, wt = zoneProgress(name)
 		print("[HandCollect] clear", name, a .. "/" .. b, "wave", w .. "/" .. wt)
 	end
 	return name
@@ -1289,14 +1241,11 @@ local function refreshHandCollectStatus()
 		st.questName = "Done"
 		st.questProg = "done"
 	end
+	st.zone = lastClearName ~= "" and lastClearName or "—"
+	st.als = "—"
 	if getgenv().HandCollectRunning == true then
-		local zonePref = peekClearZone()
-		st.zone = zonePref or "—"
-		st.als = leftoverCount(zonePref) .. " left"
 		st.zones = zonesLeft() .. " left"
 	else
-		st.zone = st.zone or "—"
-		st.als = "—"
 		st.zones = st.zones or "—"
 	end
 	st.place = MAP_NAME
@@ -1327,8 +1276,6 @@ local function handCollectTick()
 			zonePref = q.zone
 		end
 	end
-	local st = refreshHandCollectStatus()
-	st.zone = zonePref or st.zone
 	local sellNow = cap ~= math.huge and cur >= cap and cur > 0
 	if q and q.id == "SellLeaves" and cur > 0 then
 		local needSell = math.max((q.total or 5) - (have or 0), 1)
@@ -1346,13 +1293,15 @@ local function handCollectTick()
 	end
 	local n = grab(need, zonePref)
 	if n == 0 then
-		if teleToOpenLeaf(failStreak >= 2, zonePref) then
-			if os.clock() - lastTelePrint > 2.5 then
+		if teleToOpenLeaf(zonePref) then
+			task.wait(0.06)
+			n = grab(need, zonePref)
+			if os.clock() - lastTelePrint > 3 then
 				lastTelePrint = os.clock()
-				print("[HandCollect] tele leaf", zonePref or "")
+				print("[HandCollect] tele+grab", zonePref or "", n)
 			end
 		end
-	elseif os.clock() - lastGrabPrint > 1.5 then
+	elseif os.clock() - lastGrabPrint > 2 then
 		lastGrabPrint = os.clock()
 		print("[HandCollect]", cur + n, "/", cap == math.huge and "inf" or cap, "+", n)
 	end
