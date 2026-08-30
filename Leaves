@@ -1,0 +1,1149 @@
+local lp = game:GetService("Players").LocalPlayer
+local RS = game:GetService("ReplicatedStorage")
+local Remotes = RS:WaitForChild("Remotes")
+local CollectLeaf = Remotes:WaitForChild("CollectLeaf")
+local EquipTool = Remotes:WaitForChild("EquipTool")
+local EmptyBackpack = Remotes:WaitForChild("EmptyBackpack")
+local BuyBagUpgrade = Remotes:WaitForChild("BuyBagUpgrade")
+local GaragePressed = Remotes:WaitForChild("GaragePressed")
+local DoorToggle = Remotes:WaitForChild("DoorToggle")
+local BuyUpgrade = Remotes:FindFirstChild("BuyUpgrade")
+local BuyToolCash = Remotes:FindFirstChild("BuyToolCash")
+local BuyVent = Remotes:FindFirstChild("BuyVent")
+local JournalOpened = Remotes:FindFirstChild("JournalOpened")
+local BasketballPickup = Remotes:FindFirstChild("BasketballPickup")
+local BasketballRelease = Remotes:FindFirstChild("BasketballRelease")
+local BasketballGoal = Remotes:FindFirstChild("BasketballGoal")
+local HatchClicked = Remotes:FindFirstChild("HatchClicked")
+local BasementVentClick = Remotes:FindFirstChild("BasementVentClick")
+
+local BagConfig = require(RS:WaitForChild("BagConfig"))
+local QuestConfig = require(RS:WaitForChild("QuestConfig"))
+local UpgradeConfig = require(RS:WaitForChild("UpgradeConfig"))
+
+getgenv().StopHandCollect = false
+
+local function equipHand()
+	if lp:GetAttribute("SelectedTool") ~= "Hand" then
+		lp:SetAttribute("SelectedTool", "Hand")
+		EquipTool:FireServer(nil)
+	end
+	lp:SetAttribute("HandCooldown", false)
+end
+
+local function bag()
+	local cur = tonumber(lp:GetAttribute("Leaves")) or 0
+	local cap = tonumber(lp:GetAttribute("LeafCapacity")) or 25
+	if lp:GetAttribute("InfiniteBag") == true then
+		return cur, math.huge
+	end
+	return cur, cap
+end
+
+local function cash()
+	return tonumber(lp:GetAttribute("Cash")) or 0
+end
+
+local function hrp()
+	local char = lp.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function tpTo(pos)
+	local root = hrp()
+	if not root or not pos then
+		return false
+	end
+	root.CFrame = CFrame.new(pos.X, pos.Y + 3, pos.Z)
+	return true
+end
+
+local function mapFolder(name)
+	local map = workspace:FindFirstChild("Map")
+	return map and map:FindFirstChild(name)
+end
+
+local function insideZone(model, pos, pad)
+	if not (model and pos) then
+		return false
+	end
+	pad = pad or 4
+	for _, child in model:GetChildren() do
+		if child:IsA("BasePart") then
+			local v = child.CFrame:PointToObjectSpace(pos)
+			if math.abs(v.X) <= child.Size.X / 2 + pad
+				and math.abs(v.Z) <= child.Size.Z / 2 + pad
+				and v.Y >= -child.Size.Y / 2 - 6
+				and v.Y <= child.Size.Y / 2 + 14 then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function distOutsideFloor(model, pos)
+	if not (model and pos) then
+		return math.huge
+	end
+	local best = math.huge
+	for _, child in model:GetChildren() do
+		if child:IsA("BasePart") then
+			local v = child.CFrame:PointToObjectSpace(pos)
+			local dx = math.max(0, math.abs(v.X) - child.Size.X / 2)
+			local dz = math.max(0, math.abs(v.Z) - child.Size.Z / 2)
+			local dy = math.max(0, math.abs(v.Y) - child.Size.Y / 2 - 8)
+			local d = math.sqrt(dx * dx + dz * dz + dy * dy)
+			if d < best then
+				best = d
+			end
+		end
+	end
+	return best
+end
+
+local function zoneSellReady(name)
+	if not name or name == "None" then
+		return true
+	end
+	local loc = mapFolder("Leave_Locations")
+	loc = loc and loc:FindFirstChild(name)
+	if loc then
+		if loc:GetAttribute("Completed") == true then
+			return true
+		end
+		if (tonumber(loc:GetAttribute("WavesCleared")) or 0) > 0 then
+			return true
+		end
+	end
+	local doors = mapFolder("Doors")
+	if not doors then
+		return false
+	end
+	local saw, allOpen = false, true
+	for _, d in doors:GetChildren() do
+		if d:IsA("Model") and d:GetAttribute("Zone") == name then
+			saw = true
+			if d:GetAttribute("Open") ~= true then
+				allOpen = false
+			end
+		end
+	end
+	return saw and allOpen
+end
+
+local function zoneModel(name)
+	local loc = mapFolder("Leave_Locations")
+	return loc and name and loc:FindFirstChild(name)
+end
+
+local function zoneDone(name)
+	local z = zoneModel(name)
+	return z ~= nil and z:GetAttribute("Completed") == true
+end
+
+local ZONE_ORDER = {
+	"Frontyard",
+	"Porch",
+	"Court",
+	"Garage",
+	"Shed",
+	"Rooftop",
+	"Backyard",
+	"Maze",
+	"Pool",
+	"Farm",
+	"Basement",
+}
+
+local ZONE_PREREQ = {
+	Rooftop = { "Porch", "Garage", "Shed", "Frontyard" },
+	Backyard = { "Frontyard", "Porch", "Court", "Garage", "Shed", "Rooftop" },
+	Maze = { "Frontyard", "Porch", "Court", "Garage", "Shed", "Rooftop" },
+	Pool = { "Frontyard", "Porch", "Court", "Garage", "Shed", "Rooftop" },
+	Farm = { "Maze" },
+	Basement = "ALL",
+}
+
+local function zonePrereqReady(name)
+	local p = ZONE_PREREQ[name]
+	if not p then
+		return true
+	end
+	if p == "ALL" then
+		for _, n in ipairs(ZONE_ORDER) do
+			if n ~= name then
+				local z = zoneModel(n)
+				if z and z:GetAttribute("GoalTotal") and not zoneDone(n) then
+					return false
+				end
+			end
+		end
+		return true
+	end
+	for _, n in ipairs(p) do
+		if not zoneDone(n) then
+			return false
+		end
+	end
+	return true
+end
+
+local function allZonesDone()
+	local loc = mapFolder("Leave_Locations")
+	if not loc then
+		return false
+	end
+	for _, z in loc:GetChildren() do
+		if z:IsA("Model") and z:GetAttribute("GoalTotal") and z:GetAttribute("Completed") ~= true then
+			return false
+		end
+	end
+	return true
+end
+
+local function zoneProgress(name)
+	local z = zoneModel(name)
+	if not z then
+		return 0, 0, 0, 0
+	end
+	return tonumber(z:GetAttribute("GoalCollected")) or 0,
+		tonumber(z:GetAttribute("GoalTotal")) or 0,
+		tonumber(z:GetAttribute("WavesCleared")) or 0,
+		tonumber(z:GetAttribute("WavesTotal")) or 0
+end
+
+local function leafVisible(p)
+	return p:IsA("BasePart") and p.Transparency < 0.2
+end
+
+local function openLeaves(zoneName, maxOut)
+	local folder = workspace:FindFirstChild("Leaves")
+	if not folder then
+		return {}
+	end
+	local origin = hrp()
+	origin = origin and origin.Position or Vector3.zero
+	local zone = zoneModel(zoneName)
+	local list = {}
+	for _, p in folder:GetChildren() do
+		if leafVisible(p) then
+			local ok = not zone
+			if zone then
+				ok = distOutsideFloor(zone, p.Position) <= (maxOut or 3)
+			end
+			if ok then
+				list[#list + 1] = { p = p, d = (p.Position - origin).Magnitude }
+			end
+		end
+	end
+	table.sort(list, function(a, b)
+		return a.d < b.d
+	end)
+	return list
+end
+
+local function huntLeaves(zoneName)
+	for _, maxOut in ipairs({ 3, 6, 10 }) do
+		local list = openLeaves(zoneName, maxOut)
+		if #list > 0 then
+			return list
+		end
+	end
+	return {}
+end
+
+local usedIds = {}
+local failStreak = 0
+local BATCH = 75
+local lastClearName = ""
+local leftoverIdx = 0
+
+local function leafSim()
+	local m = lp:FindFirstChild("PlayerScripts")
+	m = m and m:FindFirstChild("LeafSim")
+	if not m then
+		return nil
+	end
+	local ok, api = pcall(require, m)
+	return ok and api or nil
+end
+
+local function idTable(api)
+	if not (api and type(api.collectMany) == "function") then
+		return nil
+	end
+	local getup = (type(debug) == "table" and debug.getupvalue) or getupvalue
+	if type(getup) ~= "function" then
+		return nil
+	end
+	local ok, a, b = pcall(getup, api.collectMany, 3)
+	if ok and type(b) == "table" then
+		return b
+	end
+	if ok and type(a) == "table" then
+		return a
+	end
+	return nil
+end
+
+local function fireIds(ids)
+	if #ids == 0 then
+		return 0
+	end
+	if #ids == 1 then
+		CollectLeaf:FireServer(ids[1])
+	else
+		CollectLeaf:FireServer(ids)
+	end
+	return #ids
+end
+
+local function wipeGhosts(list, map)
+	local n = 0
+	for _, e in list do
+		local id = map and map[e.p]
+		if type(id) == "number" and usedIds[id] and e.p.Parent then
+			e.p:Destroy()
+			n = n + 1
+		end
+	end
+	return n
+end
+
+local function grab(need, zoneName)
+	local list = zoneName and huntLeaves(zoneName) or openLeaves()
+	if #list == 0 then
+		return 0
+	end
+	local api = leafSim()
+	local map = idTable(api)
+	local take = math.max(1, math.min(need, BATCH))
+	local parts, ids = {}, {}
+	for _, e in list do
+		local id = map and map[e.p]
+		if type(id) == "number" then
+			if not usedIds[id] then
+				parts[#parts + 1] = e.p
+				ids[#ids + 1] = id
+			end
+		elseif e.d <= 8 then
+			parts[#parts + 1] = e.p
+		end
+		if #parts >= take then
+			break
+		end
+	end
+	if #parts == 0 then
+		table.clear(usedIds)
+		return 0
+	end
+	local before = tonumber(lp:GetAttribute("Leaves")) or 0
+	if api and type(api.collectMany) == "function" then
+		api.collectMany(parts)
+	elseif #ids > 0 then
+		fireIds(ids)
+	else
+		return 0
+	end
+	local t0 = os.clock()
+	repeat
+		task.wait(0.01)
+	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.7
+	local after = tonumber(lp:GetAttribute("Leaves")) or 0
+	if after <= before then
+		failStreak = failStreak + 1
+		if failStreak >= 8 then
+			for _, id in ids do
+				usedIds[id] = true
+			end
+			failStreak = 0
+		end
+		return 0
+	end
+	failStreak = 0
+	for _, id in ids do
+		usedIds[id] = true
+	end
+	return after - before
+end
+
+local function teleToOpenLeaf(force, zoneName)
+	local list = zoneName and huntLeaves(zoneName) or openLeaves()
+	if #list == 0 then
+		return false
+	end
+	local api = leafSim()
+	local map = idTable(api)
+	for _, e in list do
+		local id = map and map[e.p]
+		if type(id) ~= "number" or not usedIds[id] then
+			if force or e.d > 8 then
+				return tpTo(e.p.Position)
+			end
+			return false
+		end
+	end
+	wipeGhosts(list, map)
+	list = zoneName and huntLeaves(zoneName) or openLeaves()
+	if #list == 0 then
+		return false
+	end
+	return tpTo(list[1].p.Position)
+end
+
+local function dumpsterNone()
+	local folder = mapFolder("Dumpsters")
+	if not folder then
+		return nil
+	end
+	for _, d in folder:GetChildren() do
+		if d:IsA("Model") then
+			local req = d:GetAttribute("ZoneRequired")
+			if not req or req == "None" then
+				return d
+			end
+		end
+	end
+	return nil
+end
+
+local function sellDumpster()
+	local folder = mapFolder("Dumpsters")
+	if not folder then
+		return nil
+	end
+	local origin = hrp()
+	origin = origin and origin.Position or Vector3.zero
+	local best, bestD
+	for _, d in folder:GetChildren() do
+		if d:IsA("Model") then
+			local req = d:GetAttribute("ZoneRequired")
+			if zoneSellReady(req) then
+				local part = d:FindFirstChild("Leaves")
+				local pos = (part and part:IsA("BasePart") and part.Position) or d:GetPivot().Position
+				local dist = (pos - origin).Magnitude
+				if not best or dist < bestD then
+					best, bestD = d, dist
+				end
+			end
+		end
+	end
+	return best or dumpsterNone()
+end
+
+local function dumpsterPos(dump)
+	if not dump then
+		return nil
+	end
+	local part = dump:FindFirstChild("Leaves")
+	if part and part:IsA("BasePart") then
+		return part.Position
+	end
+	return dump:GetPivot().Position
+end
+
+local function fireSellAt(dump)
+	local root = hrp()
+	local pos = dumpsterPos(dump)
+	if not (root and pos) then
+		return false
+	end
+	root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 2.5))
+	task.wait(0.2)
+	EmptyBackpack:FireServer()
+	local t0 = os.clock()
+	repeat
+		task.wait(0.1)
+	until (lp:GetAttribute("Leaves") or 0) <= 0 or os.clock() - t0 > 2.5
+	if (lp:GetAttribute("Leaves") or 0) > 0 then
+		EmptyBackpack:FireServer()
+		task.wait(0.25)
+	end
+	return (lp:GetAttribute("Leaves") or 0) <= 0
+end
+
+local function sell()
+	local cur = bag()
+	if cur <= 0 then
+		return true
+	end
+	if not hrp() then
+		return false
+	end
+	local dump = sellDumpster()
+	if not dump then
+		warn("[HandCollect] no unlocked dumpster")
+		return false
+	end
+	local saved = hrp().CFrame
+	local ok = fireSellAt(dump)
+	if not ok then
+		local fallback = dumpsterNone()
+		if fallback and fallback ~= dump then
+			ok = fireSellAt(fallback)
+			dump = fallback
+		end
+	end
+	local left = lp:GetAttribute("Leaves") or 0
+	print("[HandCollect] sell", cur, "→", left, dump:GetAttribute("ZoneRequired") or "None")
+	pcall(function()
+		local root = hrp()
+		if root then
+			root.CFrame = saved
+		end
+	end)
+	task.wait(0.35)
+	teleToOpenLeaf(true, lastClearName ~= "" and lastClearName or nil)
+	return left <= 0
+end
+
+local lastBagBuy = 0
+local function bagLevelFromCap(cap)
+	local lvl = 0
+	if type(BagConfig.caps) ~= "table" then
+		return tonumber(lp:GetAttribute("BagLevel")) or 0
+	end
+	for i, c in ipairs(BagConfig.caps) do
+		if cap >= c then
+			lvl = i - 1
+		end
+	end
+	return math.max(lvl, tonumber(lp:GetAttribute("BagLevel")) or 0)
+end
+
+local function tryUpgradeBag()
+	if lp:GetAttribute("InfiniteBag") == true then
+		return
+	end
+	local _, cap = bag()
+	local lvl = bagLevelFromCap(cap)
+	local maxLvl = #BagConfig.caps - 1
+	if lvl >= maxLvl then
+		return
+	end
+	local price = BagConfig.prices[lvl + 1]
+	if not price or cash() < price then
+		return
+	end
+	if os.clock() - lastBagBuy < 1.5 then
+		return
+	end
+	lastBagBuy = os.clock()
+	local cap0 = cap
+	BuyBagUpgrade:FireServer()
+	print("[HandCollect] bag upgrade lvl", lvl, "cash", cash(), "price", price)
+	local t0 = os.clock()
+	repeat
+		task.wait(0.1)
+	until select(2, bag()) ~= cap0 or os.clock() - t0 > 2
+	table.clear(usedIds)
+	failStreak = 0
+	task.wait(0.4)
+end
+
+local function currentQuest()
+	for i, q in ipairs(QuestConfig) do
+		local have = tonumber(lp:GetAttribute("Quest" .. i)) or 0
+		if have < q.total then
+			return i, q, have
+		end
+	end
+end
+
+local function upgLevel(tool, name)
+	return tonumber(lp:GetAttribute("Upg_" .. tool .. "_" .. name)) or 0
+end
+
+local function upgPrice(tool, name)
+	local t = UpgradeConfig.tools and UpgradeConfig.tools[tool]
+	local u = t and t.upgrades and t.upgrades[name]
+	if not u then
+		return nil
+	end
+	local lvl = upgLevel(tool, name)
+	if lvl >= (u.max or 0) then
+		return nil
+	end
+	return u.prices and u.prices[lvl + 1]
+end
+
+local lastHandBuy = 0
+local function tryBuyHand(name)
+	if not BuyUpgrade then
+		return false
+	end
+	local price = upgPrice("Hand", name)
+	if not price or cash() < price then
+		return false
+	end
+	if os.clock() - lastHandBuy < 0.9 then
+		return false
+	end
+	lastHandBuy = os.clock()
+	BuyUpgrade:FireServer("Hand", name)
+	print("[HandCollect] hand", name, "cash", cash(), "price", price)
+	return true
+end
+
+local function tryHandUpgrades()
+	if tryBuyHand("Hold") then
+		return
+	end
+	local best, bestP
+	for _, name in ipairs({ "Dexterity", "Grasp" }) do
+		local p = upgPrice("Hand", name)
+		if p and cash() >= p and (not bestP or p < bestP) then
+			best, bestP = name, p
+		end
+	end
+	if best then
+		tryBuyHand(best)
+	end
+end
+
+local lastToolBuy, lastVentBuy, lastDoor, lastSwish, lastGarage, lastJournal = 0, 0, 0, 0, 0, 0
+local lastQuestId = ""
+
+local function pressGarage()
+	if workspace:GetAttribute("GarageOpen") then
+		return true
+	end
+	if os.clock() - lastGarage < 1.5 then
+		return false
+	end
+	local btn = mapFolder("GarageButton")
+	btn = btn and (btn:FindFirstChild("RedBall") or btn:FindFirstChildWhichIsA("BasePart", true))
+	if not btn then
+		return false
+	end
+	lastGarage = os.clock()
+	tpTo(btn.Position)
+	task.wait(0.15)
+	GaragePressed:FireServer()
+	print("[HandCollect] garage")
+	return true
+end
+
+local function cheapestVent()
+	local folder = mapFolder("Vents")
+	if not folder then
+		return nil
+	end
+	local best, bestC
+	for _, v in folder:GetChildren() do
+		if v:IsA("BasePart") and v:GetAttribute("Cost") ~= nil and not v:GetAttribute("Unlocked") then
+			local rakeOk = v:GetAttribute("Rake") ~= true or lp:GetAttribute("OwnsRake") == true
+			local c = tonumber(v:GetAttribute("Cost")) or 0
+			if rakeOk and cash() >= c and (not bestC or c < bestC) then
+				best, bestC = v, c
+			end
+		end
+	end
+	return best, bestC
+end
+
+local function tryBuyVent()
+	if not BuyVent then
+		return false
+	end
+	local vent, price = cheapestVent()
+	if not vent then
+		return false
+	end
+	if os.clock() - lastVentBuy < 1.1 then
+		return false
+	end
+	lastVentBuy = os.clock()
+	tpTo(vent.Position)
+	task.wait(0.15)
+	BuyVent:FireServer(vent)
+	print("[HandCollect] vent", price or 0)
+	return true
+end
+
+local CASH_TOOLS = { "Rake", "LeafBlower", "Molotov" }
+local function toolOwned(key)
+	local t = UpgradeConfig.tools and UpgradeConfig.tools[key]
+	local attr = (t and t.ownsAttr) or ("Owns" .. key)
+	return lp:GetAttribute(attr) == true
+end
+
+local function tryBuyCashTool()
+	if not BuyToolCash then
+		return false
+	end
+	local shop = UpgradeConfig.shop
+	for _, key in ipairs(CASH_TOOLS) do
+		local info = shop and shop[key]
+		if info and info.cash and not info.robuxOnly and not toolOwned(key) and cash() >= info.cash then
+			if os.clock() - lastToolBuy < 1.2 then
+				return false
+			end
+			lastToolBuy = os.clock()
+			BuyToolCash:FireServer(key)
+			print("[HandCollect] tool", key, info.cash)
+			return true
+		end
+	end
+	return false
+end
+
+local function zoneDoorClosed(zone)
+	local doors = mapFolder("Doors")
+	if not (doors and zone) then
+		return nil
+	end
+	for _, d in doors:GetChildren() do
+		if d:IsA("Model") and d:GetAttribute("Zone") == zone and not d:GetAttribute("Open") then
+			return d
+		end
+	end
+	return nil
+end
+
+local function openZoneDoor(zone)
+	if not zone or not zonePrereqReady(zone) then
+		return false
+	end
+	local d = zoneDoorClosed(zone)
+	if not d then
+		return false
+	end
+	if os.clock() - lastDoor < 2 then
+		return false
+	end
+	local pp = d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart", true)
+	if not pp then
+		return false
+	end
+	lastDoor = os.clock()
+	tpTo(pp.Position)
+	task.wait(0.15)
+	DoorToggle:FireServer(d)
+	print("[HandCollect] door", zone)
+	return true
+end
+
+local lastClearPrint = 0
+local lastFinish = 0
+local stallAt, stallName, stallT = -1, "", 0
+
+local function nextClearZone()
+	if allZonesDone() then
+		return nil
+	end
+	for _, name in ipairs(ZONE_ORDER) do
+		local z = zoneModel(name)
+		if z and z:GetAttribute("GoalTotal") and not zoneDone(name) and zonePrereqReady(name) then
+			if name == "Garage" then
+				pressGarage()
+			end
+			openZoneDoor(name)
+			local a, b, w, wt = zoneProgress(name)
+			if stallName ~= name or stallAt ~= a then
+				stallName, stallAt, stallT = name, a, os.clock()
+				leftoverIdx = 0
+			elseif a < b and os.clock() - stallT > 6 then
+				stallT = os.clock()
+				table.clear(usedIds)
+				failStreak = 0
+				local hunt = huntLeaves(name)
+				if #hunt > 0 then
+					tpTo(hunt[1].p.Position)
+					print("[HandCollect] leftover", name, #hunt)
+				else
+					local floors = {}
+					for _, c in z:GetChildren() do
+						if c:IsA("BasePart") then
+							floors[#floors + 1] = c
+						end
+					end
+					leftoverIdx = leftoverIdx + 1
+					local part = floors[((leftoverIdx - 1) % math.max(#floors, 1)) + 1]
+					if part then
+						tpTo(part.Position)
+					else
+						tpTo(z:GetPivot().Position)
+					end
+					print("[HandCollect] leftover walk", name, leftoverIdx)
+				end
+			end
+			if os.clock() - lastClearPrint > 4 or lastClearName ~= name then
+				lastClearPrint = os.clock()
+				lastClearName = name
+				print("[HandCollect] clear", name, a .. "/" .. b, "wave", w .. "/" .. wt)
+			end
+			return name
+		end
+	end
+	return nil
+end
+
+local function tryFinishGame()
+	if not (allZonesDone() or zoneDone("Basement") or RS:GetAttribute("RunCompleted") == true) then
+		return false
+	end
+	if os.clock() - lastFinish < 2 then
+		return true
+	end
+	lastFinish = os.clock()
+	local vent = mapFolder("BasementVent")
+	if vent then
+		tpTo(vent:GetPivot().Position)
+		task.wait(0.15)
+		if BasementVentClick then
+			BasementVentClick:FireServer()
+		end
+	end
+	local hatch = workspace:FindFirstChild("Map")
+	hatch = hatch and hatch:FindFirstChild("HatchDoor")
+	if hatch and HatchClicked and RS:GetAttribute("RunCompleted") == true then
+		tpTo(hatch:GetPivot().Position)
+		task.wait(0.12)
+		HatchClicked:FireServer()
+	end
+	local fall = mapFolder("PlayerFalling") or mapFolder("FallingLeaves")
+	if fall then
+		local pos = fall:IsA("BasePart") and fall.Position or fall:GetPivot().Position
+		tpTo(pos)
+	end
+	print("[HandCollect] finish game")
+	return true
+end
+
+local function hoopPart()
+	local map = workspace:FindFirstChild("Map")
+	return map and map:FindFirstChild("BasketballNet")
+end
+
+local function ballCollider()
+	local m = mapFolder("Basketball")
+	return m and (m:FindFirstChild("Collider") or m:FindFirstChild("BasketBall"))
+end
+
+local function holdingBall(col)
+	if lp:GetAttribute("HoldingBasketball") == true then
+		return true
+	end
+	if col and (col:GetAttribute("HeldBy") or 0) == lp.UserId then
+		return true
+	end
+	return false
+end
+
+local function clickAction()
+	pcall(function()
+		if mouse1click then
+			mouse1click()
+		end
+	end)
+	pcall(function()
+		local vim = game:GetService("VirtualInputManager")
+		local cam = workspace.CurrentCamera
+		local vs = cam.ViewportSize
+		vim:SendMouseButtonEvent(vs.X / 2, vs.Y / 2, 0, true, game, 1)
+		task.wait(0.04)
+		vim:SendMouseButtonEvent(vs.X / 2, vs.Y / 2, 0, false, game, 1)
+	end)
+	local ev = RS:FindFirstChild("MobileActionEvent")
+	if ev and ev:IsA("BindableEvent") then
+		ev:Fire("basketball", "began")
+	end
+end
+
+local function trySwish()
+	if not (BasketballPickup and BasketballRelease and BasketballGoal) then
+		return false
+	end
+	if os.clock() - lastSwish < 2.4 then
+		return false
+	end
+	lastSwish = os.clock()
+	lp:SetAttribute("JournalOpen", false)
+	lp:SetAttribute("ToolShopFocus", false)
+	local hoop = hoopPart()
+	local model = mapFolder("Basketball")
+	local col = ballCollider()
+	local ball = model and model:FindFirstChild("BasketBall")
+	if not (hoop and model and col) then
+		warn("[HandCollect] no basketball")
+		return false
+	end
+	local cam = workspace.CurrentCamera
+	cam.CameraType = Enum.CameraType.Custom
+	if not holdingBall(col) then
+		local pos = (ball or col).Position
+		tpTo(pos)
+		task.wait(0.12)
+		local root = hrp()
+		if root then
+			cam.CFrame = CFrame.lookAt(root.Position + Vector3.new(0, 2, 0), pos)
+		end
+		task.wait(0.08)
+		BasketballPickup:FireServer()
+		clickAction()
+		local t0 = os.clock()
+		repeat
+			task.wait(0.05)
+		until holdingBall(col) or os.clock() - t0 > 1.1
+	end
+	local net = hoop.Position
+	local stand = Vector3.new(net.X + 12, net.Y - 7, net.Z)
+	tpTo(stand)
+	task.wait(0.1)
+	local root = hrp()
+	if root then
+		cam.CFrame = CFrame.lookAt(root.Position + Vector3.new(0, 1.6, 0), net)
+		task.wait(0.08)
+		col.CFrame = cam.CFrame * CFrame.new(0, -1.4, -4)
+	end
+	BasketballRelease:FireServer()
+	lp:SetAttribute("HoldingBasketball", false)
+	local ev = RS:FindFirstChild("MobileActionEvent")
+	if ev and ev:IsA("BindableEvent") then
+		ev:Fire("shoot", "began")
+	end
+	local above = net + Vector3.new(0, 3.2, 0)
+	local below = net + Vector3.new(0, -4, 0)
+	col.Anchored = false
+	col.CFrame = CFrame.new(above)
+	col.AssemblyLinearVelocity = Vector3.new(0, -50, 0)
+	col.AssemblyAngularVelocity = Vector3.zero
+	for i = 1, 10 do
+		col.CFrame = CFrame.new(above:Lerp(below, i / 10))
+		col.AssemblyLinearVelocity = Vector3.new(0, -50, 0)
+		task.wait(0.03)
+	end
+	BasketballGoal:FireServer(true)
+	print("[HandCollect] swish throw")
+	return true
+end
+
+local function tryQuest()
+	local i, q, have = currentQuest()
+	if not q then
+		return nil
+	end
+	if q.id ~= lastQuestId then
+		lastQuestId = q.id
+		print("[HandCollect] quest", q.desc or q.id, have .. "/" .. q.total)
+	end
+	if q.id == "CollectLeaves" or q.id == "SellLeaves" then
+		return q, have
+	end
+	if q.id == "OpenJournal" then
+		if os.clock() - lastJournal > 2 then
+			lastJournal = os.clock()
+			lp:SetAttribute("JournalOpen", true)
+			if JournalOpened then
+				JournalOpened:FireServer()
+			end
+			task.delay(0.45, function()
+				lp:SetAttribute("JournalOpen", false)
+			end)
+			print("[HandCollect] journal")
+		end
+		return q, have
+	end
+	if q.id == "UpgradeHand" then
+		tryBuyHand("Hold")
+		return q, have
+	end
+	if q.id == "OpenGarage" then
+		pressGarage()
+		return q, have
+	end
+	if q.id == "CompleteGarage" then
+		pressGarage()
+		return q, have
+	end
+	if q.id == "BuyTool" or q.id == "BuyAllTools" then
+		tryBuyCashTool()
+		return q, have
+	end
+	if q.id == "BuyVent" or q.id == "BuyAllVents" then
+		tryBuyVent()
+		return q, have
+	end
+	if q.id == "UnlockAllZones" then
+		local zones = QuestConfig.ALL_ZONES or { "Rooftop", "Backyard", "Maze", "Farm", "Basement" }
+		for _, z in ipairs(zones) do
+			if zonePrereqReady(z) and zoneDoorClosed(z) then
+				openZoneDoor(z)
+				break
+			end
+		end
+		return q, have
+	end
+	if q.id == "SwishStreak" then
+		trySwish()
+		return q, have
+	end
+	if type(q.zone) == "string" then
+		if zonePrereqReady(q.zone) then
+			openZoneDoor(q.zone)
+		end
+		return q, have
+	end
+	return q, have
+end
+
+pcall(function()
+	EmptyBackpack.OnClientEvent:Connect(function(n, cashAmt)
+		if type(n) == "number" and n > 0 then
+			print("[HandCollect] sold", n, "cash", cashAmt)
+		end
+	end)
+end)
+
+getgenv().HandCollectStatus = getgenv().HandCollectStatus or {
+	running = false,
+	leaves = 0,
+	cap = 25,
+	cash = 0,
+	zone = "—",
+	bag = "0 / 25",
+	quest = "0 / 0",
+	questName = "—",
+	als = "0 left",
+	zones = "0 left",
+}
+
+local function questCount()
+	local n = 0
+	for _ in ipairs(QuestConfig) do
+		n = n + 1
+	end
+	return n
+end
+
+local function leftoverCount(zoneName)
+	local list = zoneName and huntLeaves(zoneName) or openLeaves()
+	return #list
+end
+
+local function zonesLeft()
+	local left, total = 0, 0
+	local loc = mapFolder("Leave_Locations")
+	if loc then
+		for _, z in loc:GetChildren() do
+			if z:IsA("Model") and z:GetAttribute("GoalTotal") then
+				total = total + 1
+				if z:GetAttribute("Completed") ~= true then
+					left = left + 1
+				end
+			end
+		end
+	end
+	return left, total
+end
+
+function getgenv().RefreshHandCollectStatus()
+	local st = getgenv().HandCollectStatus
+	local cur, cap = bag()
+	st.leaves = cur
+	st.cap = cap
+	st.cash = cash()
+	if cap == math.huge then
+		st.bag = tostring(cur) .. " / inf"
+	elseif cap > 0 and cur >= cap then
+		st.bag = "Full (" .. cur .. "/" .. cap .. ")"
+	else
+		st.bag = tostring(cur) .. " / " .. cap
+	end
+	local i, q, have = currentQuest()
+	local qTotal = questCount()
+	if i and q then
+		st.quest = tostring(i) .. " / " .. qTotal
+		st.questName = tostring(q.desc or q.id)
+		st.questProg = tostring(have or 0) .. " / " .. tostring(q.total or 0)
+	else
+		st.quest = tostring(qTotal) .. " / " .. qTotal
+		st.questName = "Done"
+		st.questProg = "done"
+	end
+	local zonePref = nextClearZone()
+	st.zone = zonePref or "—"
+	st.als = leftoverCount(zonePref) .. " left"
+	local zLeft = zonesLeft()
+	st.zones = zLeft .. " left"
+	return st
+end
+
+local function handCollectTick()
+	equipHand()
+	tryUpgradeBag()
+	tryHandUpgrades()
+	local q, have = tryQuest()
+	if q and q.id == "SwishStreak" then
+		task.wait(0.2)
+		return
+	end
+	if tryFinishGame() then
+		task.wait(0.4)
+		return
+	end
+	local cur, cap = bag()
+	local zonePref = nextClearZone()
+	if not zonePref and q then
+		if q.id == "CompleteGarage" then
+			zonePref = "Garage"
+		elseif type(q.zone) == "string" and zonePrereqReady(q.zone) then
+			zonePref = q.zone
+		end
+	end
+	local st = getgenv().RefreshHandCollectStatus()
+	st.zone = zonePref or st.zone
+	local sellNow = cap ~= math.huge and cur >= cap and cur > 0
+	if q and q.id == "SellLeaves" and cur > 0 then
+		local needSell = math.max((q.total or 5) - (have or 0), 1)
+		if cur >= needSell then
+			sellNow = true
+		end
+	end
+	if sellNow then
+		sell()
+		return
+	end
+	local need = cap == math.huge and 400 or math.max(0, cap - cur)
+	if need <= 0 then
+		return
+	end
+	local n = grab(need, zonePref)
+	if n == 0 then
+		if teleToOpenLeaf(failStreak >= 3, zonePref) then
+			print("[HandCollect] tele leaf", zonePref or "")
+		end
+	else
+		print("[HandCollect]", cur + n, "/", cap == math.huge and "inf" or cap, "+", n)
+	end
+end
+
+function getgenv().StartHandCollect()
+	if getgenv().HandCollectRunning then
+		return
+	end
+	getgenv().StopHandCollect = false
+	getgenv().HandCollectRunning = true
+	getgenv().HandCollectStatus.running = true
+	equipHand()
+	print("[HandCollect] clear-map | tat: getgenv().StopHandCollect = true")
+	task.spawn(function()
+		while not getgenv().StopHandCollect do
+			handCollectTick()
+			task.wait(0.08)
+		end
+		getgenv().HandCollectRunning = false
+		getgenv().HandCollectStatus.running = false
+		print("[HandCollect] stop")
+	end)
+end
+
+function getgenv().StopHandCollectRun()
+	getgenv().StopHandCollect = true
+end
+
+if not getgenv().HandCollectHub then
+	getgenv().StartHandCollect()
+end
