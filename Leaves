@@ -547,6 +547,8 @@ end
 local usedIds = {}
 local failStreak = 0
 local BATCH = 75
+local lastMissPrint = 0
+local leafCountAt, leafCountN = 0, 0
 local lastTelePrint = 0
 local lastGrabPrint = 0
 local lastAlsT = 0
@@ -720,44 +722,208 @@ local function leftoverZoneLeaf(zoneName)
 	return nil
 end
 
+local function leafSimModule()
+	local ps = lp:FindFirstChild("PlayerScripts")
+	return ps and ps:FindFirstChild("LeafSim")
+end
+
 function leafSim()
-	local m = lp:FindFirstChild("PlayerScripts")
-	m = m and m:FindFirstChild("LeafSim")
+	local m = leafSimModule()
 	if not m then
 		return nil
 	end
-	local ok, api = pcall(require, m)
-	return ok and api or nil
+	if m:IsA("ModuleScript") then
+		local ok, api = pcall(require, m)
+		if ok and type(api) == "table" then
+			return api
+		end
+	end
+	if type(getsenv) == "function" then
+		local ok, env = pcall(getsenv, m)
+		if ok and type(env) == "table" then
+			return env
+		end
+	end
+	return nil
 end
 
-function idTable(api)
-	if not (api and type(api.collectMany) == "function") then
+local cachedMap, cachedMapAt = nil, 0
+
+local function mapLooksLikeIds(t)
+	if type(t) ~= "table" then
+		return false
+	end
+	local n, hit = 0, 0
+	for k, v in pairs(t) do
+		n += 1
+		if typeof(k) == "Instance" and type(v) == "number" then
+			hit += 1
+		end
+		if hit >= 4 then
+			return true
+		end
+		if n >= 24 and hit == 0 then
+			return false
+		end
+	end
+	return hit >= 3
+end
+
+local function pullUpvalues(fn)
+	if type(fn) ~= "function" then
 		return nil
 	end
 	local getup = (type(debug) == "table" and debug.getupvalue) or getupvalue
 	if type(getup) ~= "function" then
 		return nil
 	end
-	for i = 1, 8 do
-		local ok, a, b = pcall(getup, api.collectMany, i)
-		if ok and type(b) == "table" then
+	for i = 1, 32 do
+		local ok, a, b = pcall(getup, fn, i)
+		if ok and mapLooksLikeIds(b) then
 			return b
 		end
-		if ok and type(a) == "table" then
+		if ok and mapLooksLikeIds(a) then
 			return a
 		end
 	end
 	return nil
 end
 
+function idTable(api)
+	if cachedMap and os.clock() - cachedMapAt < 10 then
+		return cachedMap
+	end
+	api = api or leafSim()
+	local t = pullUpvalues(api and api.collectMany) or pullUpvalues(api and api.collect)
+	if not t and type(api) == "table" then
+		for _, v in pairs(api) do
+			if mapLooksLikeIds(v) then
+				t = v
+				break
+			end
+		end
+	end
+	if not t then
+		local m = leafSimModule()
+		if m and type(getsenv) == "function" then
+			local ok, env = pcall(getsenv, m)
+			if ok and type(env) == "table" then
+				for _, v in pairs(env) do
+					if mapLooksLikeIds(v) then
+						t = v
+						break
+					end
+				end
+			end
+		end
+	end
+	if not t and type(getgc) == "function" then
+		for _, v in getgc(true) do
+			if mapLooksLikeIds(v) then
+				local hit = 0
+				for k, val in pairs(v) do
+					if typeof(k) == "Instance" and type(val) == "number" then
+						hit += 1
+					end
+					if hit >= 40 then
+						t = v
+						break
+					end
+				end
+				if t then
+					break
+				end
+			end
+		end
+	end
+	if t then
+		cachedMap, cachedMapAt = t, os.clock()
+	end
+	return t
+end
+
+local function folderCount()
+	if os.clock() - leafCountAt < 1 then
+		return leafCountN
+	end
+	local f = leafFolder()
+	leafCountN = f and #f:GetChildren() or 0
+	leafCountAt = os.clock()
+	return leafCountN
+end
+
+local function inZoneBox(zone, pos, pad)
+	if not (zone and pos) then
+		return false
+	end
+	pad = pad or 40
+	local cf, size = zone:GetBoundingBox()
+	local v = cf:PointToObjectSpace(pos)
+	return math.abs(v.X) <= size.X / 2 + pad
+		and math.abs(v.Z) <= size.Z / 2 + pad
+		and math.abs(v.Y) <= size.Y / 2 + pad + 20
+end
+
+local function mapLeavesNear(origin, radius, cap, zoneName)
+	local map = idTable()
+	if not (map and origin) then
+		return {}, {}
+	end
+	local zone = zoneName and zoneModel(zoneName)
+	local parts, ids = {}, {}
+	for p, id in pairs(map) do
+		if typeof(p) == "Instance" and p.Parent and p:IsA("BasePart")
+			and type(id) == "number" and not usedIds[id] then
+			local d = (p.Position - origin).Magnitude
+			if d <= radius and (not zone or inZoneBox(zone, p.Position, 48)) then
+				parts[#parts + 1] = p
+				ids[#ids + 1] = id
+				if #parts >= cap then
+					break
+				end
+			end
+		end
+	end
+	return parts, ids
+end
+
+local function closestMapLeaf(zoneName)
+	local map = idTable()
+	local root = hrp()
+	if not (map and root) then
+		return nil
+	end
+	local zone = zoneName and zoneModel(zoneName)
+	local origin = root.Position
+	local best, bestD
+	for p, id in pairs(map) do
+		if typeof(p) == "Instance" and p.Parent and p:IsA("BasePart")
+			and type(id) == "number" and not usedIds[id] then
+			if not zone or inZoneBox(zone, p.Position, 48) then
+				local d = (p.Position - origin).Magnitude
+				if not best or d < bestD then
+					best, bestD = p, d
+				end
+			end
+		end
+	end
+	return best
+end
+
 local function fireIds(ids)
 	if #ids == 0 then
 		return 0
 	end
-	if #ids == 1 then
-		CollectLeaf:FireServer(ids[1])
-	else
-		CollectLeaf:FireServer(ids)
+	for i = 1, #ids, 25 do
+		local chunk = {}
+		for j = i, math.min(i + 24, #ids) do
+			chunk[#chunk + 1] = ids[j]
+		end
+		if #chunk == 1 then
+			CollectLeaf:FireServer(chunk[1])
+		else
+			CollectLeaf:FireServer(chunk)
+		end
 	end
 	return #ids
 end
@@ -787,17 +953,19 @@ local function grabParts(parts, need)
 		end
 	end
 	local before = tonumber(lp:GetAttribute("Leaves")) or 0
-	if api and type(api.collectMany) == "function" then
-		local use = #keyed > 0 and keyed or parts
-		local ok = pcall(function()
-			api.collectMany(use)
-		end)
-		if not ok then
-			pcall(api.collectMany, api, use)
-		end
-	end
 	if #ids > 0 then
 		fireIds(ids)
+	end
+	if api and type(api.collectMany) == "function" then
+		local use = #keyed > 0 and keyed or (#ids == 0 and parts or keyed)
+		if #use > 0 then
+			local ok = pcall(function()
+				api.collectMany(use)
+			end)
+			if not ok then
+				pcall(api.collectMany, api, use)
+			end
+		end
 	end
 	local t0 = os.clock()
 	repeat
@@ -820,7 +988,15 @@ local function grabParts(parts, need)
 end
 
 local function grab(need)
-	return grabParts(nearbyParts(22), need)
+	local root = hrp()
+	if not root then
+		return 0
+	end
+	local parts = select(1, mapLeavesNear(root.Position, 45, need or BATCH))
+	if #parts == 0 then
+		parts = nearbyParts(36)
+	end
+	return grabParts(parts, need)
 end
 
 local function grabLeftover(part, need)
@@ -848,7 +1024,7 @@ local function teleToZoneLeaf(zoneName)
 	end
 	local got, tot = zoneProgress(zoneName)
 	local remain = tot > 0 and (tot - got) or 99
-	local p = oneZoneLeaf(zoneName)
+	local p = closestMapLeaf(zoneName) or oneZoneLeaf(zoneName)
 	if not p and remain <= 4 then
 		p = leftoverZoneLeaf(zoneName)
 	end
@@ -1612,6 +1788,13 @@ local function handCollectTick()
 	if need <= 0 then
 		return
 	end
+	if folderCount() < 30 then
+		if os.clock() - lastMissPrint > 4 then
+			lastMissPrint = os.clock()
+			print("[HandCollect] wait spawn", folderCount())
+		end
+		return
+	end
 	local n = grab(need)
 	if n == 0 then
 		local got, tot = 0, 0
@@ -1647,6 +1830,20 @@ local function handCollectTick()
 				lastTelePrint = os.clock()
 				print("[HandCollect] tele+grab", zonePref or "", n)
 			end
+		end
+		if n == 0 and os.clock() - lastMissPrint > 5 then
+			lastMissPrint = os.clock()
+			local map = idTable()
+			local mc = 0
+			if map then
+				for _ in pairs(map) do
+					mc += 1
+					if mc >= 99 then
+						break
+					end
+				end
+			end
+			print("[HandCollect] miss sim", leafSim() ~= nil, "map", mc, "near", #nearbyParts(36), "fold", folderCount())
 		end
 	elseif n > 0 and os.clock() - lastGrabPrint > 2 then
 		lastGrabPrint = os.clock()
