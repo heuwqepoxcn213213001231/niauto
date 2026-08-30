@@ -776,26 +776,25 @@ local function grabParts(parts, need)
 	end
 	local api = leafSim()
 	local map = idTable(api)
-	local ids = {}
+	local ids, keyed = {}, {}
 	if map then
 		for _, p in parts do
 			local id = map[p]
 			if type(id) == "number" and not usedIds[id] then
 				ids[#ids + 1] = id
+				keyed[#keyed + 1] = p
 			end
 		end
 	end
-	local before = tonumber(lp:GetAttribute("Leaves")) or 0
-	if api and type(api.collectMany) == "function" then
-		local ok = pcall(function()
-			api.collectMany(parts)
-		end)
-		if not ok then
-			pcall(api.collectMany, api, parts)
-		end
+	if #ids == 0 then
+		return 0
 	end
-	if #ids > 0 then
-		fireIds(ids)
+	local before = tonumber(lp:GetAttribute("Leaves")) or 0
+	fireIds(ids)
+	if api and type(api.collectMany) == "function" then
+		pcall(function()
+			api.collectMany(keyed)
+		end)
 	end
 	local t0 = os.clock()
 	repeat
@@ -1278,7 +1277,7 @@ local function nextClearZone()
 		lastClearPrint = os.clock()
 		lastClearName = name
 		local a, b, w, wt = zoneProgress(name)
-		print("[HandCollect] clear", name, a .. "/" .. b, "wave", w .. "/" .. wt)
+		print("[HandCollect] zone", name, a .. "/" .. b, "wave", w .. "/" .. wt)
 	end
 	return name
 end
