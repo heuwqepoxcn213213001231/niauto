@@ -1,0 +1,328 @@
+-- Steal An Egg — field steal via Tween. Cap = game WalkSpeed (max 300).
+-- Hub API: StartHandCollect / StopHandCollectRun / RefreshHandCollectStatus
+-- Tat: getgenv().StopHandCollect = true
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local RS = game:GetService("ReplicatedStorage")
+
+local lp = Players.LocalPlayer
+if not lp then
+	repeat
+		task.wait()
+	until Players.LocalPlayer
+	lp = Players.LocalPlayer
+end
+
+local GAME_MAX_WALK = 300
+local SPEED_FRAC = 0.9
+local STEAL_RANGE = 7
+local HOLD = 1.15
+
+local EggState, PlotState, SlotId, GuardGeom, AreaEggs
+pcall(function()
+	EggState = require(RS.Client.EggState)
+	PlotState = require(RS.Client.PlotState)
+	SlotId = require(RS.Shared.Util.AreaEggSlotIdentity)
+	GuardGeom = require(RS.Shared.Util.GuardAreaGeometry)
+	AreaEggs = require(RS.Shared.Types.AreaEggs)
+end)
+
+local carryMult = 1
+if EggState and EggState.CarryChanged then
+	EggState.CarryChanged:Connect(function(st)
+		if type(st) == "table" and type(st.SpeedMultiplier) == "number" and st.SpeedMultiplier > 0 then
+			carryMult = st.SpeedMultiplier
+		elseif type(st) == "table" and st.IsCarrying ~= true then
+			carryMult = 1
+		end
+	end)
+end
+
+getgenv().HandCollectStatus = getgenv().HandCollectStatus or {
+	running = false,
+	leaves = 0,
+	cap = 0,
+	cash = 0,
+	zone = "—",
+	bag = "—",
+	quest = "—",
+	questName = "—",
+	als = "—",
+	zones = "—",
+	place = "StealEgg",
+	map = "StealEgg",
+	placeId = game.PlaceId,
+}
+
+local function hrp()
+	local c = lp.Character
+	return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function hum()
+	local c = lp.Character
+	return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function allowedSpeed()
+	local h = hum()
+	local ws = (h and h.WalkSpeed) or 16
+	ws = math.clamp(ws, 8, GAME_MAX_WALK)
+	return math.clamp(ws * SPEED_FRAC * math.clamp(carryMult, 0.25, 1), 8, GAME_MAX_WALK)
+end
+
+local function groundY(pos)
+	local origin = pos + Vector3.new(0, 8, 0)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local char = lp.Character
+	if char then
+		params.FilterDescendantsInstances = { char }
+	end
+	local hit = workspace:Raycast(origin, Vector3.new(0, -40, 0), params)
+	if hit then
+		return hit.Position.Y + 3
+	end
+	return pos.Y
+end
+
+local function tweenTo(dest)
+	local root = hrp()
+	if not (root and dest) then
+		return false
+	end
+	local goal = Vector3.new(dest.X, groundY(dest), dest.Z)
+	local dist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(goal.X, 0, goal.Z)).Magnitude
+	if dist < 1.2 then
+		return true
+	end
+	local speed = allowedSpeed()
+	local t = math.clamp(dist / speed, 0.08, 18)
+	local look = CFrame.lookAt(root.Position, Vector3.new(goal.X, root.Position.Y, goal.Z))
+	root.CFrame = CFrame.new(root.Position) * look.Rotation
+	local tw = TweenService:Create(root, TweenInfo.new(t, Enum.EasingStyle.Linear, Enum.EasingDirection.Out), {
+		CFrame = CFrame.new(goal) * look.Rotation,
+	})
+	tw:Play()
+	local done = false
+	tw.Completed:Once(function()
+		done = true
+	end)
+	local t0 = os.clock()
+	while not done and os.clock() - t0 < t + 0.4 do
+		if getgenv().StopHandCollect then
+			tw:Cancel()
+			return false
+		end
+		RunService.Heartbeat:Wait()
+	end
+	return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(goal.X, 0, goal.Z)).Magnitude < 4
+end
+
+local function pastLine()
+	local line = workspace:FindFirstChild("__OBJECTS")
+	line = line and line:FindFirstChild("Areas")
+	line = line and line:FindFirstChild("SeparationLine")
+	local root = hrp()
+	if not (line and root and GuardGeom) then
+		return true
+	end
+	local ok, yes = pcall(GuardGeom.IsPastLine, GuardGeom, line, root.Position)
+	return ok and yes == true
+end
+
+local function plotHome()
+	if PlotState and type(PlotState.ResolvePlot) == "function" then
+		local ok, info = pcall(PlotState.ResolvePlot, PlotState)
+		if ok and type(info) == "table" then
+			if info.CenterPoint then
+				return info.CenterPoint.Position
+			end
+			if info.RespawnPointCFrame then
+				return info.RespawnPointCFrame.Position
+			end
+		end
+	end
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then
+		return nil
+	end
+	local root = hrp()
+	local origin = root and root.Position or Vector3.zero
+	local best, bestD
+	for _, p in plots:GetChildren() do
+		local c = p:FindFirstChild("CenterPoint") or p:FindFirstChild("SpawnPoint")
+		if c and c:IsA("BasePart") then
+			local d = (c.Position - origin).Magnitude
+			if not best or d < bestD then
+				best, bestD = c.Position, d
+			end
+		end
+	end
+	return best
+end
+
+local function fieldList()
+	if not EggState then
+		return {}
+	end
+	pcall(EggState.SyncFieldEggs)
+	local snap = EggState.ReadFieldEggs()
+	local recs = type(snap) == "table" and (snap.Records or snap) or {}
+	local out = {}
+	local states = AreaEggs and AreaEggs.States
+	for _, r in pairs(recs) do
+		if type(r) == "table" and type(r.Uid) == "string" then
+			local st = r.State
+			local ok = st == "Slot" or st == "Dropped"
+			if states then
+				ok = st == states.Slot or st == states.Dropped
+			end
+			if ok and r.CarrierUserId == nil then
+				local pos
+				if typeof(r.BoundsCFrame) == "CFrame" then
+					pos = r.BoundsCFrame.Position
+				elseif typeof(r.BottomCFrame) == "CFrame" then
+					pos = r.BottomCFrame.Position
+				end
+				if pos then
+					out[#out + 1] = { rec = r, pos = pos }
+				end
+			end
+		end
+	end
+	return out
+end
+
+local function closestEgg()
+	local root = hrp()
+	if not root then
+		return nil
+	end
+	local best, bestD
+	for _, e in fieldList() do
+		local d = (e.pos - root.Position).Magnitude
+		if not best or d < bestD then
+			best, bestD = e, d
+		end
+	end
+	return best
+end
+
+local function carrying()
+	local char = lp.Character
+	if char and char:GetAttribute("IsTrapped") == true then
+		return true
+	end
+	for _, t in ipairs(lp.Character and lp.Character:GetChildren() or {}) do
+		if t:IsA("Tool") and (string.find(t.Name, "Egg", 1, true) or t:GetAttribute("Uid")) then
+			return true
+		end
+	end
+	return false
+end
+
+local function stealOne(entry)
+	if not (entry and EggState) then
+		return false
+	end
+	if not tweenTo(entry.pos) then
+		return false
+	end
+	local root = hrp()
+	if not root or (root.Position - entry.pos).Magnitude > STEAL_RANGE + 2 then
+		return false
+	end
+	task.wait(HOLD)
+	local slotKey
+	if SlotId and SlotId.LooksLikeFirstAreaUid(entry.rec.Uid) then
+		slotKey = SlotId.SlotKey(entry.rec.AreaId, entry.rec.NestId)
+	end
+	local ok, err = EggState.CarryFieldEgg(entry.rec.Uid, slotKey)
+	if not ok then
+		print("[StealField] deny", entry.rec.Uid, err)
+		return false
+	end
+	print("[StealField] steal", entry.rec.AreaId or "?", entry.rec.Uid)
+	return true
+end
+
+local lastPrint = 0
+local function tick()
+	if carrying() then
+		local home = plotHome()
+		if home then
+			tweenTo(home)
+		end
+		return
+	end
+	if not pastLine() then
+		local eggs = fieldList()
+		if #eggs > 0 then
+			tweenTo(eggs[1].pos)
+		end
+		return
+	end
+	local egg = closestEgg()
+	if not egg then
+		if os.clock() - lastPrint > 5 then
+			lastPrint = os.clock()
+			print("[StealField] no field egg")
+		end
+		task.wait(0.6)
+		return
+	end
+	stealOne(egg)
+end
+
+local function refresh()
+	local st = getgenv().HandCollectStatus
+	st.running = getgenv().HandCollectRunning == true
+	st.place = "StealEgg"
+	st.map = "StealEgg"
+	st.placeId = game.PlaceId
+	st.zone = carrying() and "carrying" or "field"
+	st.bag = tostring(math.floor(allowedSpeed())) .. " / 300"
+	st.quest = st.zone
+	st.questName = "Steal field"
+	st.als = "tween " .. tostring(math.floor(SPEED_FRAC * 100)) .. "%"
+	local n = #fieldList()
+	st.zones = tostring(n) .. " eggs"
+	return st
+end
+
+local function start()
+	if getgenv().HandCollectRunning then
+		return
+	end
+	getgenv().StopHandCollect = false
+	getgenv().HandCollectRunning = true
+	getgenv().HandCollectStatus.running = true
+	print("[StealField] tween steal | cap WalkSpeed*" .. SPEED_FRAC .. " max " .. GAME_MAX_WALK)
+	task.spawn(function()
+		while not getgenv().StopHandCollect do
+			local ok, err = pcall(tick)
+			if not ok then
+				warn("[StealField]", err)
+			end
+			task.wait(0.12)
+		end
+		getgenv().HandCollectRunning = false
+		getgenv().HandCollectStatus.running = false
+		print("[StealField] stop")
+	end)
+end
+
+local function stop()
+	getgenv().StopHandCollect = true
+end
+
+getgenv().RefreshHandCollectStatus = refresh
+getgenv().StartHandCollect = start
+getgenv().StopHandCollectRun = stop
+
+if not getgenv().HandCollectHub then
+	start()
+end
