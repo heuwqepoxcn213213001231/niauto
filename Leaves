@@ -426,11 +426,11 @@ local function bustLeafCache()
 	leafCache, leafCacheAt, leafCacheKey = nil, 0, ""
 end
 
-local function openLeaves(zoneName, maxOut)
+local function openLeaves(zoneName, maxOut, fresh)
 	maxOut = maxOut or 10
 	local key = tostring(zoneName or "") .. ":" .. tostring(maxOut)
 	local now = os.clock()
-	if leafCache and leafCacheKey == key and now - leafCacheAt < 0.28 then
+	if not fresh and leafCache and leafCacheKey == key and now - leafCacheAt < 0.28 then
 		return leafCache
 	end
 	local folder = workspace:FindFirstChild("Leaves")
@@ -459,13 +459,19 @@ local function openLeaves(zoneName, maxOut)
 	return list
 end
 
-local function huntLeaves(zoneName)
-	return openLeaves(zoneName, 10)
+local function huntLeaves(zoneName, fresh)
+	for _, maxOut in ipairs({ 3, 6, 10 }) do
+		local list = openLeaves(zoneName, maxOut, fresh)
+		if #list > 0 then
+			return list
+		end
+	end
+	return {}
 end
 
 local usedIds = {}
 local failStreak = 0
-local BATCH = 75
+local BATCH = 60
 local lastTelePrint = 0
 local lastGrabPrint = 0
 local lastAlsT = 0
@@ -526,7 +532,7 @@ local function wipeGhosts(list, map)
 end
 
 local function grab(need, zoneName)
-	local list = zoneName and huntLeaves(zoneName) or openLeaves()
+	local list = zoneName and huntLeaves(zoneName, true) or openLeaves(nil, 10, true)
 	if #list == 0 then
 		return 0
 	end
@@ -535,56 +541,50 @@ local function grab(need, zoneName)
 	local take = math.max(1, math.min(need, BATCH))
 	local parts, ids = {}, {}
 	for _, e in list do
-		local id = map and map[e.p]
-		if type(id) == "number" then
-			if not usedIds[id] then
+		if e.p and e.p.Parent and e.d <= 16 then
+			local id = map and map[e.p]
+			if type(id) == "number" and not usedIds[id] then
 				parts[#parts + 1] = e.p
 				ids[#ids + 1] = id
 			end
-		elseif e.d <= 8 then
-			parts[#parts + 1] = e.p
 		end
-		if #parts >= take then
+		if #ids >= take then
 			break
 		end
 	end
-	if #parts == 0 then
-		table.clear(usedIds)
+	if #ids == 0 then
+		if failStreak >= 6 then
+			table.clear(usedIds)
+			failStreak = 0
+		end
+		bustLeafCache()
 		return 0
 	end
 	local before = tonumber(lp:GetAttribute("Leaves")) or 0
-	if api and type(api.collectMany) == "function" then
-		api.collectMany(parts)
-	elseif #ids > 0 then
-		fireIds(ids)
-	else
-		return 0
-	end
+	fireIds(ids)
 	local t0 = os.clock()
 	repeat
-		task.wait(0.01)
-	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.7
+		task.wait(0.02)
+	until (tonumber(lp:GetAttribute("Leaves")) or 0) > before or os.clock() - t0 > 0.85
 	local after = tonumber(lp:GetAttribute("Leaves")) or 0
 	if after <= before then
 		failStreak = failStreak + 1
-		if failStreak >= 8 then
-			for _, id in ids do
-				usedIds[id] = true
-			end
-			failStreak = 0
-		end
+		bustLeafCache()
 		return 0
 	end
 	failStreak = 0
 	for _, id in ids do
 		usedIds[id] = true
 	end
+	if api and type(api.collectMany) == "function" then
+		pcall(api.collectMany, parts)
+	end
 	bustLeafCache()
 	return after - before
 end
 
 local function teleToOpenLeaf(force, zoneName)
-	local list = zoneName and huntLeaves(zoneName) or openLeaves()
+	local list = zoneName and huntLeaves(zoneName, true) or openLeaves(nil, 10, true)
 	if #list == 0 then
 		return false
 	end
