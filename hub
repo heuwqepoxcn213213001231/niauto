@@ -414,7 +414,7 @@ ScriptChangelog:AddChangelogEntry({
  Version = "Hand Collect 1.2",
  Date = "Current",
  Changes = {
-  { Type = "Added", Text = "Detect map qua ActiveMap / MapConfig — House / Mansion / Gas Station chung 1 farm PlaceId" },
+  { Type = "Added", Text = "Detect map via ActiveMap / MapConfig — House / Mansion / Gas Station share one farm PlaceId" },
   { Type = "Added", Text = "Gas Station zone order + buy LeafBlower / LeafMower (cash 24.99)" },
   { Type = "Added", Text = "Lobby Farm tab: map, difficulty, party size, start run" },
  },
@@ -455,8 +455,6 @@ pcall(function()
  DiffCfg = require(RS:WaitForChild("DifficultyConfig", 3))
 end)
 
--- beatenByMap[map] = độ đã CLEAR (0 chưa, 1 Easy, 2 Medium, 3 Hard, 4 Impossible)
--- độ mở tiếp theo = beaten + 1  (Easy xong → Medium, Medium xong → Hard, Hard xong → Impossible)
 local unlockedMaps = { House = true }
 local beatenByMap = { House = 0, Mansion = 0, GasStation = 0 }
 
@@ -530,16 +528,17 @@ end
 
 local function scanGuiBest()
  local pg = LocalPlayer:FindFirstChild("PlayerGui")
- if not pg then
+ local root = pg and (pg:FindFirstChild("Gui") or pg:FindFirstChild("TeamMenu") or pg:FindFirstChild("NewGame"))
+ if not root then
   return
  end
- for _, d in ipairs(pg:GetDescendants()) do
+ for _, d in ipairs(root:GetDescendants()) do
   if d:IsA("TextLabel") or d:IsA("TextButton") then
    local text = d.Text
-   if type(text) == "string" and text:find("Best") and text:find("%d+:%d+") then
+   if type(text) == "string" and text:find("Best", 1, true) and text:find("%d+:%d+") then
     local inst = d
     for _ = 1, 10 do
-     if not inst then
+     if not inst or inst == root then
       break
      end
      if inst.Name == "House" or inst.Name == "Mansion" or inst.Name == "GasStation" then
@@ -548,30 +547,6 @@ local function scanGuiBest()
      end
      inst = inst.Parent
     end
-   end
-  end
- end
-end
-
-local DIFF_WORD = {
- Easy = 1, EASY = 1,
- Medium = 2, MEDIUM = 2,
- Hard = 3, HARD = 3,
- Impossible = 4, IMPOSSIBLE = 4,
-}
-
-local function scanGuiDifficulty(mapKey)
- local pg = LocalPlayer:FindFirstChild("PlayerGui")
- if not pg then
-  return
- end
- mapKey = mapKey or (getgenv().NiaFarmPrefs and getgenv().NiaFarmPrefs.map) or "House"
- for _, d in ipairs(pg:GetDescendants()) do
-  if d:IsA("TextLabel") or d:IsA("TextButton") then
-   local idx = DIFF_WORD[d.Text]
-   if idx and d.Visible and d.AbsoluteSize.X > 20 then
-    -- Game đang hiện độ này = độ đó đã unlock → đã clear bậc trước
-    raiseBeaten(mapKey, idx - 1)
    end
   end
  end
@@ -628,13 +603,11 @@ end
 local function refreshProgress()
  scanPlayerProgress()
  scanGuiBest()
- scanGuiDifficulty()
  if (beatenByMap.House or 0) >= 1 then
   unlockedMaps.Mansion = true
  end
  if (beatenByMap.Mansion or 0) >= 1 then
   unlockedMaps.GasStation = true
-  raiseBeaten("House", 1)
  end
 end
 
@@ -811,11 +784,11 @@ if IS_LOBBY then
  FarmMain:AddParagraph({
   Title = "Main Lobby",
   Icon = "Lucide:map-pin",
-  Text = "Place " .. tostring(game.PlaceId) .. "\nEasy → Medium → Hard → Impossible. Chưa unlock thì tụt về độ cao nhất đã mở.",
+  Text = "Place " .. tostring(game.PlaceId),
  })
  mapDrop = FarmMain:AddDropdown({
   Text = "Map",
-  Description = "Mansion = House Easy · Gas = Mansion Easy",
+  Description = "Locked maps cannot be selected",
   Icon = "Lucide:map",
   Flag = "farmMap",
   Options = MAP_OPTS,
@@ -836,7 +809,7 @@ if IS_LOBBY then
  })
  diffDrop = FarmMain:AddDropdown({
   Text = "Difficulty",
-  Description = "Easy → Medium → Hard → Impossible · chưa mở thì về bậc trước",
+  Description = "Falls back to the highest unlocked tier",
   Icon = "Lucide:gauge",
   Flag = "farmDifficulty",
   Options = DIFF_OPTS,
@@ -874,7 +847,7 @@ if IS_LOBBY then
  })
  FarmMain:AddSlider({
   Text = "Party Size",
-  Description = "Max players on this pad (1–4)",
+  Description = "Max players on this pad",
   Icon = "Lucide:users",
   Flag = "farmParty",
   Min = 1, Max = 4, Default = math.clamp(tonumber(prefs.maxPlayers) or 1, 1, 4), Increment = 1,
@@ -885,7 +858,7 @@ if IS_LOBBY then
  })
  FarmMain:AddToggle({
   Text = "Friends Only",
-  Description = "Lock pad to friends",
+  Description = "Lock the pad to friends",
   Icon = "Lucide:lock",
   Flag = "farmFriends",
   Default = prefs.friendsOnly == true,
@@ -896,7 +869,7 @@ if IS_LOBBY then
  })
  FarmMain:AddToggle({
   Text = "Auto Join",
-  Description = "Bật = ngồi pad + confirm map đã unlock, farm tự chạy sau teleport",
+  Description = "Sit pad, confirm, and farm after teleport",
   Icon = "Lucide:play",
   Flag = "autoHandCollect",
   Default = getgenv().NiaAutoFarm == true,
@@ -910,9 +883,7 @@ else
  })
  FarmMain:AddToggle({
   Text = "Auto Hand Collect",
-  Description = MAP_NAME == "Mansion" and "Clear Mansion: alleys, courts, backyard, statues"
-   or MAP_NAME == "GasStation" and "Clear Gas Station: street → inside → storage → lot / roof"
-   or "Grab leaves, sell, buy upgrades, clear zones",
+  Description = "Collect, sell, buy, and clear zones",
   Icon = "Lucide:hand",
   Flag = "autoHandCollect",
   Default = getgenv().NiaAutoFarm == true,
