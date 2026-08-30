@@ -1,5 +1,86 @@
 local lp = game:GetService("Players").LocalPlayer
 local RS = game:GetService("ReplicatedStorage")
+
+local PLACE = {
+	Lobby = 92637789841354,
+	Mansion = 100068273119174,
+}
+
+local function detectMap()
+	local id = game.PlaceId
+	if id == PLACE.Lobby then
+		return "Lobby"
+	end
+	if id == PLACE.Mansion then
+		return "Mansion"
+	end
+	local am = workspace:GetAttribute("ActiveMap")
+	if type(am) == "string" and am ~= "" then
+		return am
+	end
+	local loc = workspace:FindFirstChild("Map")
+	loc = loc and loc:FindFirstChild("Leave_Locations")
+	if loc then
+		if loc:FindFirstChild("Basement") or loc:FindFirstChild("Garage") then
+			return "House"
+		end
+		if loc:FindFirstChild("Tennis Court") or loc:FindFirstChild("[F] Left Alley") then
+			return "Mansion"
+		end
+		if loc:FindFirstChild("Staff Room") or loc:FindFirstChild("Inside Gas Station") then
+			return "GasStation"
+		end
+		return "Farm"
+	end
+	if workspace:FindFirstChild("Teams") and workspace.Teams:FindFirstChild("Square1") then
+		return "Lobby"
+	end
+	return "Lobby"
+end
+
+local MAP_NAME = detectMap()
+getgenv().FallPlace = MAP_NAME
+getgenv().FallPlaceId = game.PlaceId
+
+local function emptyStatus()
+	return {
+		running = false,
+		leaves = 0,
+		cap = 25,
+		cash = 0,
+		zone = "—",
+		bag = "—",
+		quest = "—",
+		questName = "—",
+		als = "—",
+		zones = "—",
+		place = MAP_NAME,
+		placeId = game.PlaceId,
+		map = MAP_NAME,
+	}
+end
+
+if MAP_NAME == "Lobby" then
+	getgenv().HandCollectStatus = getgenv().HandCollectStatus or emptyStatus()
+	getgenv().RefreshHandCollectStatus = function()
+		local st = getgenv().HandCollectStatus
+		st.place = "Lobby"
+		st.map = "Lobby"
+		st.placeId = game.PlaceId
+		st.zone = "Lobby"
+		st.running = false
+		return st
+	end
+	getgenv().StartHandCollect = function()
+		warn("[HandCollect] lobby — start a run from Farm tab first")
+	end
+	getgenv().StopHandCollectRun = function()
+		getgenv().StopHandCollect = true
+	end
+	print("[HandCollect] lobby", game.PlaceId)
+	return
+end
+
 local Remotes = RS:WaitForChild("Remotes")
 local CollectLeaf = Remotes:WaitForChild("CollectLeaf")
 local EquipTool = Remotes:WaitForChild("EquipTool")
@@ -139,10 +220,23 @@ end
 
 local function zoneDone(name)
 	local z = zoneModel(name)
-	return z ~= nil and z:GetAttribute("Completed") == true
+	if not z then
+		return false
+	end
+	if z:GetAttribute("Completed") == true then
+		return true
+	end
+	local got = tonumber(z:GetAttribute("GoalCollected")) or 0
+	local tot = tonumber(z:GetAttribute("GoalTotal")) or 0
+	if tot <= 0 or got < tot then
+		return false
+	end
+	local w = tonumber(z:GetAttribute("WavesCleared")) or 0
+	local wt = tonumber(z:GetAttribute("WavesTotal")) or 0
+	return wt <= 0 or w >= wt
 end
 
-local ZONE_ORDER = {
+local HOUSE_ORDER = {
 	"Frontyard",
 	"Porch",
 	"Court",
@@ -156,7 +250,7 @@ local ZONE_ORDER = {
 	"Basement",
 }
 
-local ZONE_PREREQ = {
+local HOUSE_PREREQ = {
 	Rooftop = { "Porch", "Garage", "Shed", "Frontyard" },
 	Backyard = { "Frontyard", "Porch", "Court", "Garage", "Shed", "Rooftop" },
 	Maze = { "Frontyard", "Porch", "Court", "Garage", "Shed", "Rooftop" },
@@ -165,7 +259,116 @@ local ZONE_PREREQ = {
 	Basement = "ALL",
 }
 
+local MANSION_ORDER = {
+	"Frontyard",
+	"Porch",
+	"[F] Left Alley",
+	"[F] Right Alley",
+	"Pool",
+	"Tennis Court",
+	"Basketball Court",
+	"Relaxation Court",
+	"Backyard",
+	"[B] Left Alley",
+	"[B] Right Alley",
+	"Statues",
+	"Maze",
+}
+
+local MANSION_PREREQ = {
+	Pool = { "Frontyard", "Porch", "[F] Left Alley", "[F] Right Alley" },
+	["Tennis Court"] = { "Frontyard", "Porch", "[F] Left Alley", "[F] Right Alley" },
+	["Basketball Court"] = { "Tennis Court" },
+	["Relaxation Court"] = { "Pool" },
+	Backyard = { "Basketball Court", "Relaxation Court" },
+	["[B] Left Alley"] = { "Basketball Court", "Relaxation Court" },
+	["[B] Right Alley"] = { "Basketball Court", "Relaxation Court" },
+	Statues = { "Basketball Court", "Relaxation Court" },
+	Maze = "ALL",
+}
+
+local ZONE_ORDER = HOUSE_ORDER
+local ZONE_PREREQ = HOUSE_PREREQ
+
+local function copyList(src)
+	local t = {}
+	for i, v in ipairs(src) do
+		t[i] = v
+	end
+	return t
+end
+
+local function mergePrereq(base, extra)
+	local t = {}
+	for k, v in pairs(base) do
+		t[k] = v
+	end
+	if type(extra) == "table" then
+		for k, v in pairs(extra) do
+			t[k] = v
+		end
+	end
+	return t
+end
+
+local function applyMapLayout()
+	if MAP_NAME == "Mansion" then
+		ZONE_ORDER = copyList(MANSION_ORDER)
+		ZONE_PREREQ = mergePrereq(MANSION_PREREQ, nil)
+	else
+		ZONE_ORDER = copyList(HOUSE_ORDER)
+		ZONE_PREREQ = mergePrereq(HOUSE_PREREQ, nil)
+	end
+	pcall(function()
+		local folder = workspace:FindFirstChild("Map")
+		local mod = folder and folder:FindFirstChild("MapConfig")
+		if mod then
+			local cfg = require(mod)
+			if cfg and type(cfg.zonePrereq) == "table" then
+				ZONE_PREREQ = mergePrereq(ZONE_PREREQ, cfg.zonePrereq)
+			end
+		end
+	end)
+	local seen = {}
+	for _, n in ipairs(ZONE_ORDER) do
+		seen[n] = true
+	end
+	local loc = mapFolder("Leave_Locations")
+	if loc then
+		for _, z in loc:GetChildren() do
+			if z:IsA("Model") and z:GetAttribute("GoalTotal") and not seen[z.Name] then
+				local at = #ZONE_ORDER
+				if ZONE_ORDER[at] == "Maze" or ZONE_ORDER[at] == "Basement" then
+					table.insert(ZONE_ORDER, at, z.Name)
+				else
+					ZONE_ORDER[#ZONE_ORDER + 1] = z.Name
+				end
+				seen[z.Name] = true
+			end
+		end
+	end
+	print("[HandCollect] map", MAP_NAME, "zones", #ZONE_ORDER)
+end
+
+applyMapLayout()
+
+local function priorZonesDone(name)
+	for _, n in ipairs(ZONE_ORDER) do
+		if n == name then
+			return true
+		end
+		local z = zoneModel(n)
+		if z and z:GetAttribute("GoalTotal") and not zoneDone(n) then
+			return false
+		end
+	end
+	return true
+end
+
 local function zonePrereqReady(name)
+	if not name or not priorZonesDone(name) then
+		return false
+	end
 	local p = ZONE_PREREQ[name]
 	if not p then
 		return true
@@ -217,7 +420,19 @@ local function leafVisible(p)
 	return p:IsA("BasePart") and p.Transparency < 0.2
 end
 
+local leafCache, leafCacheAt, leafCacheKey = nil, 0, ""
+
+local function bustLeafCache()
+	leafCache, leafCacheAt, leafCacheKey = nil, 0, ""
+end
+
 local function openLeaves(zoneName, maxOut)
+	maxOut = maxOut or 10
+	local key = tostring(zoneName or "") .. ":" .. tostring(maxOut)
+	local now = os.clock()
+	if leafCache and leafCacheKey == key and now - leafCacheAt < 0.28 then
+		return leafCache
+	end
 	local folder = workspace:FindFirstChild("Leaves")
 	if not folder then
 		return {}
@@ -230,7 +445,7 @@ local function openLeaves(zoneName, maxOut)
 		if leafVisible(p) then
 			local ok = not zone
 			if zone then
-				ok = distOutsideFloor(zone, p.Position) <= (maxOut or 3)
+				ok = distOutsideFloor(zone, p.Position) <= maxOut
 			end
 			if ok then
 				list[#list + 1] = { p = p, d = (p.Position - origin).Magnitude }
@@ -240,22 +455,21 @@ local function openLeaves(zoneName, maxOut)
 	table.sort(list, function(a, b)
 		return a.d < b.d
 	end)
+	leafCache, leafCacheAt, leafCacheKey = list, now, key
 	return list
 end
 
 local function huntLeaves(zoneName)
-	for _, maxOut in ipairs({ 3, 6, 10 }) do
-		local list = openLeaves(zoneName, maxOut)
-		if #list > 0 then
-			return list
-		end
-	end
-	return {}
+	return openLeaves(zoneName, 10)
 end
 
 local usedIds = {}
 local failStreak = 0
-local BATCH = 75
+local BATCH = 120
+local lastTelePrint = 0
+local lastGrabPrint = 0
+local lastAlsT = 0
+local lastAlsN = 0
 local lastClearName = ""
 local leftoverIdx = 0
 
@@ -365,6 +579,7 @@ local function grab(need, zoneName)
 	for _, id in ids do
 		usedIds[id] = true
 	end
+	bustLeafCache()
 	return after - before
 end
 
@@ -710,7 +925,7 @@ local function openZoneDoor(zone)
 	if not d then
 		return false
 	end
-	if os.clock() - lastDoor < 2 then
+	if os.clock() - lastDoor < 3.5 then
 		return false
 	end
 	local pp = d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart", true)
@@ -729,59 +944,70 @@ local lastClearPrint = 0
 local lastFinish = 0
 local stallAt, stallName, stallT = -1, "", 0
 
-local function nextClearZone()
+local function peekClearZone()
 	if allZonesDone() then
 		return nil
 	end
 	for _, name in ipairs(ZONE_ORDER) do
 		local z = zoneModel(name)
 		if z and z:GetAttribute("GoalTotal") and not zoneDone(name) and zonePrereqReady(name) then
-			if name == "Garage" then
-				pressGarage()
-			end
-			openZoneDoor(name)
-			local a, b, w, wt = zoneProgress(name)
-			if stallName ~= name or stallAt ~= a then
-				stallName, stallAt, stallT = name, a, os.clock()
-				leftoverIdx = 0
-			elseif a < b and os.clock() - stallT > 6 then
-				stallT = os.clock()
-				table.clear(usedIds)
-				failStreak = 0
-				local hunt = huntLeaves(name)
-				if #hunt > 0 then
-					tpTo(hunt[1].p.Position)
-					print("[HandCollect] leftover", name, #hunt)
-				else
-					local floors = {}
-					for _, c in z:GetChildren() do
-						if c:IsA("BasePart") then
-							floors[#floors + 1] = c
-						end
-					end
-					leftoverIdx = leftoverIdx + 1
-					local part = floors[((leftoverIdx - 1) % math.max(#floors, 1)) + 1]
-					if part then
-						tpTo(part.Position)
-					else
-						tpTo(z:GetPivot().Position)
-					end
-					print("[HandCollect] leftover walk", name, leftoverIdx)
-				end
-			end
-			if os.clock() - lastClearPrint > 4 or lastClearName ~= name then
-				lastClearPrint = os.clock()
-				lastClearName = name
-				print("[HandCollect] clear", name, a .. "/" .. b, "wave", w .. "/" .. wt)
-			end
 			return name
 		end
 	end
 	return nil
 end
 
+local function nextClearZone()
+	local name = peekClearZone()
+	if not name then
+		return nil
+	end
+	local z = zoneModel(name)
+	if name == "Garage" then
+		pressGarage()
+	end
+	openZoneDoor(name)
+	local a, b, w, wt = zoneProgress(name)
+	if stallName ~= name or stallAt ~= a then
+		stallName, stallAt, stallT = name, a, os.clock()
+		leftoverIdx = 0
+	elseif a < b and os.clock() - stallT > 8 then
+		stallT = os.clock()
+		table.clear(usedIds)
+		failStreak = 0
+		bustLeafCache()
+		local hunt = huntLeaves(name)
+		if #hunt > 0 then
+			tpTo(hunt[1].p.Position)
+			print("[HandCollect] leftover", name, #hunt)
+		elseif z then
+			local floors = {}
+			for _, c in z:GetChildren() do
+				if c:IsA("BasePart") then
+					floors[#floors + 1] = c
+				end
+			end
+			leftoverIdx = leftoverIdx + 1
+			local part = floors[((leftoverIdx - 1) % math.max(#floors, 1)) + 1]
+			if part then
+				tpTo(part.Position)
+			else
+				tpTo(z:GetPivot().Position)
+			end
+			print("[HandCollect] leftover walk", name, leftoverIdx)
+		end
+	end
+	if os.clock() - lastClearPrint > 6 or lastClearName ~= name then
+		lastClearPrint = os.clock()
+		lastClearName = name
+		print("[HandCollect] clear", name, a .. "/" .. b, "wave", w .. "/" .. wt)
+	end
+	return name
+end
+
 local function tryFinishGame()
-	if not (allZonesDone() or zoneDone("Basement") or RS:GetAttribute("RunCompleted") == true) then
+	local houseDone = MAP_NAME == "House" and zoneDone("Basement")
+	if not (allZonesDone() or houseDone or RS:GetAttribute("RunCompleted") == true) then
 		return false
 	end
 	if os.clock() - lastFinish < 2 then
@@ -967,9 +1193,10 @@ local function tryQuest()
 		return q, have
 	end
 	if q.id == "UnlockAllZones" then
+		local cur = peekClearZone()
 		local zones = QuestConfig.ALL_ZONES or { "Rooftop", "Backyard", "Maze", "Farm", "Basement" }
 		for _, z in ipairs(zones) do
-			if zonePrereqReady(z) and zoneDoorClosed(z) then
+			if (not cur or cur == z) and zonePrereqReady(z) and zoneDoorClosed(z) then
 				openZoneDoor(z)
 				break
 			end
@@ -981,7 +1208,8 @@ local function tryQuest()
 		return q, have
 	end
 	if type(q.zone) == "string" then
-		if zonePrereqReady(q.zone) then
+		local cur = peekClearZone()
+		if (cur == q.zone or not cur) and zonePrereqReady(q.zone) then
 			openZoneDoor(q.zone)
 		end
 		return q, have
@@ -997,18 +1225,10 @@ pcall(function()
 	end)
 end)
 
-getgenv().HandCollectStatus = getgenv().HandCollectStatus or {
-	running = false,
-	leaves = 0,
-	cap = 25,
-	cash = 0,
-	zone = "—",
-	bag = "0 / 25",
-	quest = "0 / 0",
-	questName = "—",
-	als = "0 left",
-	zones = "0 left",
-}
+getgenv().HandCollectStatus = getgenv().HandCollectStatus or emptyStatus()
+getgenv().HandCollectStatus.place = MAP_NAME
+getgenv().HandCollectStatus.map = MAP_NAME
+getgenv().HandCollectStatus.placeId = game.PlaceId
 
 local function questCount()
 	local n = 0
@@ -1019,8 +1239,14 @@ local function questCount()
 end
 
 local function leftoverCount(zoneName)
+	local now = os.clock()
+	if now - lastAlsT < 1.2 then
+		return lastAlsN
+	end
 	local list = zoneName and huntLeaves(zoneName) or openLeaves()
-	return #list
+	lastAlsT = now
+	lastAlsN = #list
+	return lastAlsN
 end
 
 local function zonesLeft()
@@ -1063,11 +1289,14 @@ local function refreshHandCollectStatus()
 		st.questName = "Done"
 		st.questProg = "done"
 	end
-	local zonePref = nextClearZone()
+	local zonePref = peekClearZone()
 	st.zone = zonePref or "—"
 	st.als = leftoverCount(zonePref) .. " left"
 	local zLeft = zonesLeft()
 	st.zones = zLeft .. " left"
+	st.place = MAP_NAME
+	st.map = MAP_NAME
+	st.placeId = game.PlaceId
 	return st
 end
 
@@ -1112,10 +1341,14 @@ local function handCollectTick()
 	end
 	local n = grab(need, zonePref)
 	if n == 0 then
-		if teleToOpenLeaf(failStreak >= 3, zonePref) then
-			print("[HandCollect] tele leaf", zonePref or "")
+		if teleToOpenLeaf(failStreak >= 2, zonePref) then
+			if os.clock() - lastTelePrint > 2.5 then
+				lastTelePrint = os.clock()
+				print("[HandCollect] tele leaf", zonePref or "")
+			end
 		end
-	else
+	elseif os.clock() - lastGrabPrint > 1.5 then
+		lastGrabPrint = os.clock()
 		print("[HandCollect]", cur + n, "/", cap == math.huge and "inf" or cap, "+", n)
 	end
 end
@@ -1128,11 +1361,11 @@ local function startHandCollect()
 	getgenv().HandCollectRunning = true
 	getgenv().HandCollectStatus.running = true
 	equipHand()
-	print("[HandCollect] clear-map | tat: getgenv().StopHandCollect = true")
+	print("[HandCollect] clear-map", MAP_NAME, "| tat: getgenv().StopHandCollect = true")
 	task.spawn(function()
 		while not getgenv().StopHandCollect do
 			handCollectTick()
-			task.wait(0.08)
+			task.wait(0.12)
 		end
 		getgenv().HandCollectRunning = false
 		getgenv().HandCollectStatus.running = false
