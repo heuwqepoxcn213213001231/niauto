@@ -1,0 +1,145 @@
+-- Persist test — centered UI + queue_on_teleport
+local SOURCE = "https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/persist_test"
+
+if getgenv()._NiaPersistTest then return end
+getgenv()._NiaPersistTest = true
+
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local queueteleport = (typeof(queue_on_teleport) == "function" and queue_on_teleport)
+ or (syn and syn.queue_on_teleport)
+ or (fluxus and fluxus.queue_on_teleport)
+ or (typeof(queueonteleport) == "function" and queueonteleport)
+ or nil
+
+local queued = false
+if queueteleport then
+ LocalPlayer.OnTeleport:Connect(function()
+  if queued then return end
+  queued = true
+  queueteleport("loadstring(game:HttpGet('" .. SOURCE .. "'))()")
+ end)
+end
+
+pcall(function()
+ local old = PlayerGui:FindFirstChild("NiaPersistTest")
+ if old then old:Destroy() end
+end)
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "NiaPersistTest"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = PlayerGui
+
+local card = Instance.new("Frame")
+card.Name = "Card"
+card.AnchorPoint = Vector2.new(0.5, 0.5)
+card.Position = UDim2.fromScale(0.5, 0.5)
+card.Size = UDim2.fromOffset(420, 220)
+card.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+card.BorderSizePixel = 0
+card.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = card
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(255, 90, 90)
+stroke.Thickness = 2
+stroke.Parent = card
+
+local pad = Instance.new("UIPadding")
+pad.PaddingTop = UDim.new(0, 18)
+pad.PaddingBottom = UDim.new(0, 18)
+pad.PaddingLeft = UDim.new(0, 20)
+pad.PaddingRight = UDim.new(0, 20)
+pad.Parent = card
+
+local layout = Instance.new("UIListLayout")
+layout.FillDirection = Enum.FillDirection.Vertical
+layout.Padding = UDim.new(0, 8)
+layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = card
+
+local function label(text, size, color, order)
+ local l = Instance.new("TextLabel")
+ l.BackgroundTransparency = 1
+ l.Size = UDim2.new(1, 0, 0, size + 6)
+ l.Font = Enum.Font.GothamBold
+ l.TextSize = size
+ l.TextColor3 = color
+ l.TextWrapped = true
+ l.Text = text
+ l.LayoutOrder = order
+ l.Parent = card
+ return l
+end
+
+label("NIA PERSIST TEST", 22, Color3.fromRGB(255, 90, 90), 1)
+label(queueteleport and "queue_on_teleport: YES" or "queue_on_teleport: NO", 14, queueteleport and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(255, 80, 80), 2)
+
+local info = label("", 13, Color3.fromRGB(210, 210, 215), 3)
+info.Font = Enum.Font.Gotham
+
+local function refresh()
+ info.Text = string.format(
+  "PlaceId %s\nJobId %s\n%s",
+  tostring(game.PlaceId),
+  string.sub(tostring(game.JobId), 1, 18),
+  os.date("%H:%M:%S")
+ )
+end
+refresh()
+
+local row = Instance.new("Frame")
+row.BackgroundTransparency = 1
+row.Size = UDim2.new(1, 0, 0, 36)
+row.LayoutOrder = 4
+row.Parent = card
+
+local rowLayout = Instance.new("UIListLayout")
+rowLayout.FillDirection = Enum.FillDirection.Horizontal
+rowLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+rowLayout.Padding = UDim.new(0, 10)
+rowLayout.Parent = row
+
+local function button(text, color, fn)
+ local b = Instance.new("TextButton")
+ b.Size = UDim2.fromOffset(170, 36)
+ b.BackgroundColor3 = color
+ b.BorderSizePixel = 0
+ b.Font = Enum.Font.GothamBold
+ b.TextSize = 14
+ b.TextColor3 = Color3.fromRGB(255, 255, 255)
+ b.Text = text
+ b.Parent = row
+ local c = Instance.new("UICorner")
+ c.CornerRadius = UDim.new(0, 8)
+ c.Parent = b
+ b.MouseButton1Click:Connect(fn)
+end
+
+button("Rejoin", Color3.fromRGB(255, 90, 90), function()
+ pcall(function()
+  TeleportService:Teleport(game.PlaceId, LocalPlayer)
+ end)
+end)
+
+button("Close", Color3.fromRGB(50, 50, 55), function()
+ getgenv()._NiaPersistTest = nil
+ gui:Destroy()
+end)
+
+task.spawn(function()
+ while gui.Parent do
+  refresh()
+  task.wait(1)
+ end
+end)
