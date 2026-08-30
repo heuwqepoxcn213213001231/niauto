@@ -7,6 +7,9 @@ if getgenv().KeepNiaHub == nil then
 end
 
 local Players = game:GetService("Players")
+if not Players.LocalPlayer then
+ repeat task.wait() until Players.LocalPlayer
+end
 local LocalPlayer = Players.LocalPlayer
 local RS = game:GetService("ReplicatedStorage")
 
@@ -69,7 +72,7 @@ local queueteleport = (typeof(queue_on_teleport) == "function" and queue_on_tele
  or nil
 
 local queued = false
-if queueteleport then
+if queueteleport and LocalPlayer then
  LocalPlayer.OnTeleport:Connect(function()
   if getgenv().KeepNiaHub == false or queued then
    return
