@@ -107,7 +107,7 @@ if not src then
 end
 local NiaHub = loadstring(src)()
 NiaHub:PreloadIcons({ "Lucide", "Material", "Phosphor", "SF" })
-NiaHub:SetScaleRange(1.35, 1.35)
+NiaHub:SetScaleRange(0.75, 1.35)
 
 local function httpGet(url)
  local ok, body = pcall(function()
@@ -730,6 +730,255 @@ local function applyFps(n)
  end)
 end
 
+local ANTI_KEEP_WS = {
+ Camera = true,
+ Terrain = true,
+ Leaves = true,
+ Map = true,
+ Teams = true,
+}
+
+local ANTI_KEEP_MAP = {
+ Leave_Locations = true,
+ Doors = true,
+ Dumpsters = true,
+ Vents = true,
+ GarageButton = true,
+ BasementVent = true,
+ HatchDoor = true,
+ FallingLeaves = true,
+ PlayerFalling = true,
+ Basketball = true,
+ BasketballNet = true,
+ MapConfig = true,
+ BagConfig = true,
+ UpgradeConfig = true,
+}
+
+local antiLagOn = false
+local antiLagConn
+local lightingBackup
+
+local function isFx(inst)
+ return inst:IsA("ParticleEmitter")
+  or inst:IsA("Beam")
+  or inst:IsA("Trail")
+  or inst:IsA("Fire")
+  or inst:IsA("Smoke")
+  or inst:IsA("Sparkles")
+  or inst:IsA("PointLight")
+  or inst:IsA("SpotLight")
+  or inst:IsA("SurfaceLight")
+  or inst:IsA("Highlight")
+  or inst:IsA("SelectionBox")
+  or inst:IsA("SelectionSphere")
+  or inst:IsA("Atmosphere")
+  or inst:IsA("BloomEffect")
+  or inst:IsA("BlurEffect")
+  or inst:IsA("ColorCorrectionEffect")
+  or inst:IsA("DepthOfFieldEffect")
+  or inst:IsA("SunRaysEffect")
+  or inst:IsA("Sky")
+  or inst:IsA("Clouds")
+end
+
+local function underKeepMap(inst)
+ local map = workspace:FindFirstChild("Map")
+ if not (map and inst:IsDescendantOf(map)) then
+  return false
+ end
+ local cur = inst
+ while cur and cur ~= map do
+  if ANTI_KEEP_MAP[cur.Name] then
+   return true
+  end
+  cur = cur.Parent
+ end
+ return false
+end
+
+local function isLocalChar(inst)
+ local char = LocalPlayer.Character
+ return char and (inst == char or inst:IsDescendantOf(char))
+end
+
+local function hidePart(part)
+ if not part:IsA("BasePart") then
+  return
+ end
+ part.LocalTransparencyModifier = 1
+ part.CastShadow = false
+ pcall(function()
+  if part:IsA("MeshPart") then
+   part.TextureID = ""
+  end
+ end)
+end
+
+local function stripFx(root)
+ if not root then
+  return
+ end
+ for _, inst in ipairs(root:GetDescendants()) do
+  if isFx(inst) then
+   pcall(function()
+    if inst:IsA("PostEffect") or inst:IsA("Atmosphere") or inst:IsA("Sky") or inst:IsA("Clouds") then
+     inst.Enabled = false
+    else
+     inst:Destroy()
+    end
+   end)
+  elseif inst:IsA("Decal") or inst:IsA("Texture") then
+   pcall(inst.Destroy, inst)
+  end
+ end
+end
+
+local function nukeLighting()
+ if not lightingBackup then
+  lightingBackup = {
+   Brightness = Lighting.Brightness,
+   Ambient = Lighting.Ambient,
+   OutdoorAmbient = Lighting.OutdoorAmbient,
+   FogEnd = Lighting.FogEnd,
+   FogStart = Lighting.FogStart,
+   GlobalShadows = Lighting.GlobalShadows,
+   ClockTime = Lighting.ClockTime,
+  }
+ end
+ Lighting.GlobalShadows = false
+ Lighting.Brightness = 0
+ Lighting.FogEnd = 0
+ Lighting.FogStart = 0
+ Lighting.Ambient = Color3.new(1, 1, 1)
+ Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+ Lighting.ClockTime = 12
+ for _, inst in ipairs(Lighting:GetChildren()) do
+  if isFx(inst) then
+   pcall(function()
+    inst.Enabled = false
+   end)
+  end
+ end
+ pcall(function()
+  settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+ end)
+ pcall(function()
+  UserSettings():GetService("UserGameSettings").SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+ end)
+end
+
+local function restoreLighting()
+ if lightingBackup then
+  for k, v in pairs(lightingBackup) do
+   pcall(function()
+    Lighting[k] = v
+   end)
+  end
+ end
+ pcall(function()
+  settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+ end)
+end
+
+local function applyAntiLag(on)
+ antiLagOn = on and true or false
+ if antiLagConn then
+  antiLagConn:Disconnect()
+  antiLagConn = nil
+ end
+ if not on then
+  restoreLighting()
+  NiaHub:Notify({
+   Title = "Anti Lag",
+   Text = "FX off. Map đã xóa không hoàn lại — rejoin để restore.",
+   Type = "info",
+   Duration = 4,
+  })
+  return
+ end
+ nukeLighting()
+ pcall(function()
+  NiaHub:SetBlurEnabled(false)
+ end)
+ pcall(function()
+  workspace.Terrain:Clear()
+  workspace.Terrain.Decoration = false
+ end)
+ local leaves = workspace:FindFirstChild("Leaves")
+ local map = workspace:FindFirstChild("Map")
+ if map then
+  for _, child in ipairs(map:GetChildren()) do
+   if not ANTI_KEEP_MAP[child.Name] then
+    pcall(child.Destroy, child)
+   else
+    stripFx(child)
+    for _, inst in ipairs(child:GetDescendants()) do
+     hidePart(inst)
+    end
+    hidePart(child)
+   end
+  end
+ end
+ for _, child in ipairs(workspace:GetChildren()) do
+  if child:IsA("Terrain") or child:IsA("Camera") then
+  elseif ANTI_KEEP_WS[child.Name] or child == leaves or child == map then
+   if child.Name == "Teams" then
+    stripFx(child)
+    for _, inst in ipairs(child:GetDescendants()) do
+     hidePart(inst)
+    end
+   end
+  elseif isLocalChar(child) then
+  else
+   pcall(child.Destroy, child)
+  end
+ end
+ for _, plr in ipairs(Players:GetPlayers()) do
+  if plr ~= LocalPlayer and plr.Character then
+   for _, inst in ipairs(plr.Character:GetDescendants()) do
+    hidePart(inst)
+   end
+  end
+ end
+ stripFx(workspace)
+ antiLagConn = workspace.DescendantAdded:Connect(function(inst)
+  if not antiLagOn then
+   return
+  end
+  if isFx(inst) or inst:IsA("Decal") or inst:IsA("Texture") then
+   task.defer(function()
+    pcall(inst.Destroy, inst)
+   end)
+   return
+  end
+  if leaves and inst:IsDescendantOf(leaves) then
+   return
+  end
+  if underKeepMap(inst) then
+   task.defer(hidePart, inst)
+   return
+  end
+  if isLocalChar(inst) then
+   return
+  end
+  if inst:IsA("BasePart") or inst:IsA("Model") or inst:IsA("Folder") then
+   local mapNow = workspace:FindFirstChild("Map")
+   if mapNow and inst:IsDescendantOf(mapNow) and not underKeepMap(inst) then
+    task.defer(function()
+     pcall(inst.Destroy, inst)
+    end)
+   end
+  end
+ end)
+ NiaHub:Notify({
+  Title = "Anti Lag",
+  Text = "Map / FX stripped. Leaves + zones + dumpsters kept.",
+  Type = "success",
+  Duration = 3,
+ })
+end
+
 Tabs.Settings = Window:AddTab({ Name = "Settings", Icon = "SF:gear" })
 
 local GeneralSettings = Tabs.Settings:AddSubTab({ Name = "General", Icon = "SF:slider.horizontal.3" })
@@ -778,10 +1027,19 @@ GeneralSettings:AddToggle({
  end,
 })
 
-GeneralSettings:AddDivider()
-GeneralSettings:AddSection("Performance")
-
-GeneralSettings:AddSlider({
+local Performance = Tabs.Settings:AddSubTab({ Name = "Performance", Icon = "SF:gauge" })
+Performance:AddSection("Anti Lag")
+Performance:AddToggle({
+ Text = "Anti Lag",
+ Description = "Xóa map / FX / lighting. Giữ leaves, zone, cửa, dumpster, vent",
+ Icon = "Lucide:zap",
+ Flag = "antiLag",
+ Default = false,
+ Callback = applyAntiLag,
+})
+Performance:AddDivider()
+Performance:AddSection("Client")
+Performance:AddSlider({
  Text = "Render Distance",
  Description = "Fog start/end in studs",
  Icon = "SF:eye",
@@ -790,8 +1048,7 @@ GeneralSettings:AddSlider({
  Suffix = " studs",
  Callback = applyRenderDistance,
 })
-
-GeneralSettings:AddSlider({
+Performance:AddSlider({
  Text = "Max FPS",
  Description = "setfpscap if the executor supports it",
  Icon = "SF:gauge",
