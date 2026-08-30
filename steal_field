@@ -16,9 +16,8 @@ if not lp then
 end
 
 local GAME_MAX_WALK = 300
-local SPEED_FRAC = 0.9
+local MIN_TWEEN = 100
 local STEAL_RANGE = 7
-local HOLD = 1.15
 
 local EggState, PlotState, SlotId, GuardGeom, AreaEggs
 pcall(function()
@@ -29,14 +28,10 @@ pcall(function()
 	AreaEggs = require(RS.Shared.Types.AreaEggs)
 end)
 
-local carryMult = 1
+local isCarrying = false
 if EggState and EggState.CarryChanged then
 	EggState.CarryChanged:Connect(function(st)
-		if type(st) == "table" and type(st.SpeedMultiplier) == "number" and st.SpeedMultiplier > 0 then
-			carryMult = st.SpeedMultiplier
-		elseif type(st) == "table" and st.IsCarrying ~= true then
-			carryMult = 1
-		end
+		isCarrying = type(st) == "table" and st.IsCarrying == true
 	end)
 end
 
@@ -69,8 +64,7 @@ end
 local function allowedSpeed()
 	local h = hum()
 	local ws = (h and h.WalkSpeed) or 16
-	ws = math.clamp(ws, 8, GAME_MAX_WALK)
-	return math.clamp(ws * SPEED_FRAC * math.clamp(carryMult, 0.25, 1), 8, GAME_MAX_WALK)
+	return math.clamp(math.max(MIN_TWEEN, ws), MIN_TWEEN, GAME_MAX_WALK)
 end
 
 local function groundY(pos)
@@ -99,7 +93,7 @@ local function tweenTo(dest)
 		return true
 	end
 	local speed = allowedSpeed()
-	local t = math.clamp(dist / speed, 0.08, 18)
+	local t = math.clamp(dist / speed, 0.05, 12)
 	local look = CFrame.lookAt(root.Position, Vector3.new(goal.X, root.Position.Y, goal.Z))
 	root.CFrame = CFrame.new(root.Position) * look.Rotation
 	local tw = TweenService:Create(root, TweenInfo.new(t, Enum.EasingStyle.Linear, Enum.EasingDirection.Out), {
@@ -111,14 +105,52 @@ local function tweenTo(dest)
 		done = true
 	end)
 	local t0 = os.clock()
-	while not done and os.clock() - t0 < t + 0.4 do
+	while not done and os.clock() - t0 < t + 0.35 do
 		if getgenv().StopHandCollect then
 			tw:Cancel()
 			return false
 		end
 		RunService.Heartbeat:Wait()
 	end
-	return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(goal.X, 0, goal.Z)).Magnitude < 4
+	return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(goal.X, 0, goal.Z)).Magnitude < 5
+end
+
+local function stealPromptNear(pos)
+	local folder = workspace:FindFirstChild("AreaEggSlotsClient")
+	if not (folder and pos) then
+		return nil
+	end
+	local best, bestD
+	for _, m in folder:GetChildren() do
+		local p = m:FindFirstChild("CarryAreaEgg", true)
+		if p and p:IsA("ProximityPrompt") then
+			local at = m:GetPivot().Position
+			local d = (at - pos).Magnitude
+			if d < 14 and (not best or d < bestD) then
+				best, bestD = p, d
+			end
+		end
+	end
+	return best
+end
+
+local function pressSteal(prompt)
+	if not prompt then
+		return
+	end
+	pcall(function()
+		prompt.Enabled = true
+		prompt.HoldDuration = workspace:GetAttribute("FastEggPickupTime") and 0.25 or 1.2
+	end)
+	if type(fireproximityprompt) == "function" then
+		pcall(fireproximityprompt, prompt)
+		return
+	end
+	pcall(function()
+		prompt:InputHoldBegin()
+		task.wait(tonumber(prompt.HoldDuration) or 1.2)
+		prompt:InputHoldEnd()
+	end)
 end
 
 local function pastLine()
@@ -164,11 +196,15 @@ local function plotHome()
 	return best
 end
 
+local lastSync = 0
 local function fieldList()
 	if not EggState then
 		return {}
 	end
-	pcall(EggState.SyncFieldEggs)
+	if os.clock() - lastSync > 2 then
+		lastSync = os.clock()
+		pcall(EggState.SyncFieldEggs)
+	end
 	local snap = EggState.ReadFieldEggs()
 	local recs = type(snap) == "table" and (snap.Records or snap) or {}
 	local out = {}
@@ -212,12 +248,18 @@ local function closestEgg()
 end
 
 local function carrying()
-	local char = lp.Character
-	if char and char:GetAttribute("IsTrapped") == true then
+	if isCarrying then
 		return true
 	end
-	for _, t in ipairs(lp.Character and lp.Character:GetChildren() or {}) do
-		if t:IsA("Tool") and (string.find(t.Name, "Egg", 1, true) or t:GetAttribute("Uid")) then
+	local char = lp.Character
+	if not char then
+		return false
+	end
+	if char:GetAttribute("IsTrapped") == true then
+		return true
+	end
+	for _, t in ipairs(char:GetChildren()) do
+		if t:IsA("Tool") and (string.find(string.lower(t.Name), "egg", 1, true) or t:GetAttribute("Uid")) then
 			return true
 		end
 	end
@@ -232,20 +274,32 @@ local function stealOne(entry)
 		return false
 	end
 	local root = hrp()
-	if not root or (root.Position - entry.pos).Magnitude > STEAL_RANGE + 2 then
+	if not root or (root.Position - entry.pos).Magnitude > STEAL_RANGE + 3 then
 		return false
 	end
-	task.wait(HOLD)
+	local prompt = stealPromptNear(entry.pos)
+	pressSteal(prompt)
 	local slotKey
 	if SlotId and SlotId.LooksLikeFirstAreaUid(entry.rec.Uid) then
 		slotKey = SlotId.SlotKey(entry.rec.AreaId, entry.rec.NestId)
 	end
 	local ok, err = EggState.CarryFieldEgg(entry.rec.Uid, slotKey)
-	if not ok then
+	if not ok and not carrying() then
+		if prompt then
+			pressSteal(prompt)
+			task.wait(0.15)
+		end
+		ok, err = EggState.CarryFieldEgg(entry.rec.Uid, slotKey)
+	end
+	if not ok and not carrying() then
 		print("[StealField] deny", entry.rec.Uid, err)
 		return false
 	end
 	print("[StealField] steal", entry.rec.AreaId or "?", entry.rec.Uid)
+	local home = plotHome()
+	if home then
+		tweenTo(home)
+	end
 	return true
 end
 
@@ -287,7 +341,7 @@ local function refresh()
 	st.bag = tostring(math.floor(allowedSpeed())) .. " / 300"
 	st.quest = st.zone
 	st.questName = "Steal field"
-	st.als = "tween " .. tostring(math.floor(SPEED_FRAC * 100)) .. "%"
+	st.als = "tween " .. tostring(MIN_TWEEN) .. "+"
 	local n = #fieldList()
 	st.zones = tostring(n) .. " eggs"
 	return st
@@ -300,7 +354,7 @@ local function start()
 	getgenv().StopHandCollect = false
 	getgenv().HandCollectRunning = true
 	getgenv().HandCollectStatus.running = true
-	print("[StealField] tween steal | cap WalkSpeed*" .. SPEED_FRAC .. " max " .. GAME_MAX_WALK)
+	print("[StealField] tween steal | speed", MIN_TWEEN, "–", GAME_MAX_WALK)
 	task.spawn(function()
 		while not getgenv().StopHandCollect do
 			local ok, err = pcall(tick)
