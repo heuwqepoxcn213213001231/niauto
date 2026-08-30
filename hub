@@ -172,9 +172,7 @@ local function loadFarm()
  return true
 end
 
-if not IS_LOBBY then
- loadFarm()
-end
+-- Farm source loads on first Auto Hand Collect toggle, not at hub boot.
 
 local TOGGLE_KEY = Enum.KeyCode.RightShift
 local Tabs = {}
@@ -187,7 +185,7 @@ local Window = NiaHub:CreateWindow({
  MinSize = Vector2.new(500, 360),
  Draggable = true,
  Resizable = true,
- UseBlur = true,
+ UseBlur = false,
  DefaultTab = "Home",
  Credits = false,
  NotifyKeybind = false,
@@ -238,24 +236,35 @@ local statusGrid = Details:AddInfoGrid({
  },
 })
 
+local function cheapBagText()
+ local cur = tonumber(LocalPlayer:GetAttribute("Leaves")) or 0
+ local cap = tonumber(LocalPlayer:GetAttribute("LeafCapacity")) or 25
+ if LocalPlayer:GetAttribute("InfiniteBag") == true then
+  return tostring(cur) .. " / inf"
+ end
+ return tostring(cur) .. " / " .. tostring(cap)
+end
+
 task.spawn(function()
- while task.wait(0.5) do
+ while true do
+  local running = getgenv().HandCollectRunning == true
+  task.wait(running and 1 or 2.5)
   if not statusGrid or not statusGrid.Instance or not statusGrid.Instance.Parent then
    break
   end
-  if type(getgenv().RefreshHandCollectStatus) == "function" then
+  if running and type(getgenv().RefreshHandCollectStatus) == "function" then
    pcall(getgenv().RefreshHandCollectStatus)
   end
   local st = getgenv().HandCollectStatus or {}
   statusGrid:SetValue("Place", MAP_LABEL[st.map or MAP_NAME] or st.map or MAP_NAME)
-  statusGrid:SetValue("Bag", st.bag or "—")
+  statusGrid:SetValue("Bag", (running and st.bag) or cheapBagText())
   local questText = st.quest or "—"
-  if st.questName and st.questName ~= "—" and st.questName ~= "" then
+  if running and st.questName and st.questName ~= "—" and st.questName ~= "" then
    questText = questText .. " · " .. st.questName
   end
-  statusGrid:SetValue("Quest", questText)
-  statusGrid:SetValue("Als", st.als or "—")
-  statusGrid:SetValue("Zones", st.zones or "—")
+  statusGrid:SetValue("Quest", running and questText or "—")
+  statusGrid:SetValue("Als", running and (st.als or "—") or "—")
+  statusGrid:SetValue("Zones", running and (st.zones or "—") or "—")
  end
 end)
 
@@ -583,7 +592,8 @@ local stats = Actions:AddParagraph({
 })
 
 task.spawn(function()
- while task.wait(1) do
+ while true do
+  task.wait(getgenv().HandCollectRunning and 1.5 or 3)
   if not stats or not stats.Instance or not stats.Instance.Parent then
    break
   end
@@ -652,14 +662,9 @@ local function applyAllSounds()
    ugs.MasterVolume = audio.sfxOn and audio.master or 0
   end
  end)
- scanSounds(workspace)
  scanSounds(SoundService)
  scanSounds(LocalPlayer:FindFirstChild("PlayerGui"))
 end
-
-workspace.DescendantAdded:Connect(function(inst)
- if inst:IsA("Sound") then task.defer(applySound, inst) end
-end)
 
 local function paintUi()
  local T = NiaHub.Theme
@@ -749,7 +754,7 @@ GeneralSettings:AddToggle({
  Description = "Blurs the world while the panel is open",
  Icon = "SF:drop",
  Flag = "blur",
- Default = true,
+ Default = false,
  Callback = function(value) NiaHub:SetBlurEnabled(value) end,
 })
 
