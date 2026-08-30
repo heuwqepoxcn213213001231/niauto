@@ -284,21 +284,40 @@ pcall(function()
 end)
 
 do
+ local TOGGLE_IMAGE = "rbxassetid://96666997322011"
  local UIS = game:GetService("UserInputService")
  local root = NiaHub._Root
  if not root then
   local gui = Window._gui
   root = gui and (gui:FindFirstAncestorWhichIsA("LayerCollector") or gui.Parent)
  end
- if root and not root:FindFirstChild("MobileToggleButton") then
+ local function applyToggleImage(inst)
+  if inst and inst:IsA("ImageButton") then
+   inst.Image = TOGGLE_IMAGE
+   inst.ImageRectOffset = Vector2.zero
+   inst.ImageRectSize = Vector2.zero
+  end
+ end
+ local found
+ if root then
+  for _, d in ipairs(root:GetDescendants()) do
+   if d.Name == "MobileToggleButton" then
+    applyToggleImage(d)
+    found = d
+   end
+  end
+  applyToggleImage(root:FindFirstChild("MobileToggleButton"))
+  found = found or root:FindFirstChild("MobileToggleButton")
+ end
+ if root and not found then
   local btn = Instance.new("ImageButton")
   btn.Name = "MobileToggleButton"
   btn.BackgroundTransparency = 1
   btn.BorderSizePixel = 0
   btn.AnchorPoint = Vector2.new(0.5, 0)
-  btn.Position = UDim2.new(0.5, 0, 0.04, 0)
+  btn.Position = UDim2.new(0.5, 0, 0.07, 0)
   btn.Size = UDim2.fromOffset(45, 45)
-  btn.Image = "rbxassetid://96666997322011"
+  btn.Image = TOGGLE_IMAGE
   btn.ZIndex = 100
   btn.Parent = root
   local corner = Instance.new("UICorner")
