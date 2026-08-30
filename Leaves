@@ -7,14 +7,17 @@ local PLACE = {
 }
 
 local function detectMap()
-	local id = game.PlaceId
-	if id == PLACE.Lobby then
-		return "Lobby"
-	end
-	if id == PLACE.Mansion then
-		return "Mansion"
-	end
 	local am = workspace:GetAttribute("ActiveMap")
+	if type(am) == "string" and am ~= "" then
+		return am
+	end
+	pcall(function()
+		local folder = workspace:FindFirstChild("Map")
+		local mod = folder and folder:FindFirstChild("MapConfig")
+		if mod then
+			am = require(mod).name
+		end
+	end)
 	if type(am) == "string" and am ~= "" then
 		return am
 	end
@@ -32,13 +35,35 @@ local function detectMap()
 		end
 		return "Farm"
 	end
+	if game.PlaceId == PLACE.Lobby then
+		return "Lobby"
+	end
 	if workspace:FindFirstChild("Teams") and workspace.Teams:FindFirstChild("Square1") then
 		return "Lobby"
 	end
 	return "Lobby"
 end
 
-local MAP_NAME = detectMap()
+local function waitFarmMap()
+	local name = detectMap()
+	if name ~= "Lobby" then
+		return name
+	end
+	if game.PlaceId == PLACE.Lobby then
+		return "Lobby"
+	end
+	local t0 = os.clock()
+	while os.clock() - t0 < 8 do
+		task.wait(0.15)
+		name = detectMap()
+		if name ~= "Lobby" then
+			return name
+		end
+	end
+	return detectMap()
+end
+
+local MAP_NAME = waitFarmMap()
 getgenv().FallPlace = MAP_NAME
 getgenv().FallPlaceId = game.PlaceId
 
@@ -101,6 +126,29 @@ local BasementVentClick = Remotes:FindFirstChild("BasementVentClick")
 local BagConfig = require(RS:WaitForChild("BagConfig"))
 local QuestConfig = require(RS:WaitForChild("QuestConfig"))
 local UpgradeConfig = require(RS:WaitForChild("UpgradeConfig"))
+pcall(function()
+	local folder = workspace:FindFirstChild("Map")
+	local mod = folder and folder:FindFirstChild("UpgradeConfig")
+	if not mod then
+		return
+	end
+	local cfg = require(mod)
+	if type(cfg) ~= "table" then
+		return
+	end
+	if type(cfg.shop) == "table" then
+		UpgradeConfig.shop = UpgradeConfig.shop or {}
+		for k, v in pairs(cfg.shop) do
+			UpgradeConfig.shop[k] = v
+		end
+	end
+	if type(cfg.tools) == "table" then
+		UpgradeConfig.tools = UpgradeConfig.tools or {}
+		for k, v in pairs(cfg.tools) do
+			UpgradeConfig.tools[k] = v
+		end
+	end
+end)
 
 getgenv().StopHandCollect = false
 
@@ -287,6 +335,28 @@ local MANSION_PREREQ = {
 	Maze = "ALL",
 }
 
+local GAS_ORDER = {
+	"Street",
+	"Gas Station Entrance",
+	"Billboard",
+	"Bus Stop",
+	"Inside Gas Station",
+	"Staff Room",
+	"Restroom",
+	"Storage Room",
+	"Back Lot",
+	"Roof",
+}
+
+local GAS_PREREQ = {
+	["Inside Gas Station"] = { "Street", "Gas Station Entrance", "Billboard", "Bus Stop" },
+	["Staff Room"] = { "Inside Gas Station" },
+	Restroom = { "Inside Gas Station" },
+	["Storage Room"] = { "Staff Room", "Restroom" },
+	["Back Lot"] = { "Storage Room" },
+	Roof = { "Storage Room" },
+}
+
 local ZONE_ORDER = HOUSE_ORDER
 local ZONE_PREREQ = HOUSE_PREREQ
 
@@ -315,6 +385,9 @@ local function applyMapLayout()
 	if MAP_NAME == "Mansion" then
 		ZONE_ORDER = copyList(MANSION_ORDER)
 		ZONE_PREREQ = mergePrereq(MANSION_PREREQ, nil)
+	elseif MAP_NAME == "GasStation" then
+		ZONE_ORDER = copyList(GAS_ORDER)
+		ZONE_PREREQ = mergePrereq(GAS_PREREQ, nil)
 	else
 		ZONE_ORDER = copyList(HOUSE_ORDER)
 		ZONE_PREREQ = mergePrereq(HOUSE_PREREQ, nil)
@@ -422,7 +495,7 @@ end
 
 local usedIds = {}
 local failStreak = 0
-local BATCH = 75
+local BATCH = 80
 local lastTelePrint = 0
 local lastGrabPrint = 0
 local lastAlsT = 0
@@ -863,11 +936,42 @@ local function tryBuyVent()
 	return true
 end
 
-local CASH_TOOLS = { "Rake", "LeafBlower", "Molotov" }
+local CASH_TOOLS = { "Rake", "LeafBlower", "LeafMower", "Molotov" }
 local function toolOwned(key)
 	local t = UpgradeConfig.tools and UpgradeConfig.tools[key]
 	local attr = (t and t.ownsAttr) or ("Owns" .. key)
-	return lp:GetAttribute(attr) == true
+	if lp:GetAttribute(attr) == true then
+		return true
+	end
+	return lp:GetAttribute("Owns" .. key) == true
+end
+
+local function canAfford(price)
+	price = tonumber(price)
+	if not price then
+		return false
+	end
+	return cash() + 1 >= price
+end
+
+local function toolStand(key)
+	local folder = mapFolder("ToolsToBuy")
+	if not folder then
+		return nil
+	end
+	local info = UpgradeConfig.shop and UpgradeConfig.shop[key]
+	local modelName = (info and info.model) or key
+	return folder:FindFirstChild(modelName)
+		or folder:FindFirstChild(key)
+		or folder:FindFirstChild(modelName:gsub(" ", ""))
+end
+
+local function buyableTools()
+	local q = QuestConfig.BUYABLE_TOOLS
+	if type(q) == "table" and #q > 0 then
+		return q
+	end
+	return CASH_TOOLS
 end
 
 local function tryBuyCashTool()
@@ -875,15 +979,37 @@ local function tryBuyCashTool()
 		return false
 	end
 	local shop = UpgradeConfig.shop
-	for _, key in ipairs(CASH_TOOLS) do
+	local keys = {}
+	local seen = {}
+	for _, key in ipairs(buyableTools()) do
+		if not seen[key] then
+			seen[key] = true
+			keys[#keys + 1] = key
+		end
+	end
+	if type(shop) == "table" then
+		for key, info in pairs(shop) do
+			if type(info) == "table" and info.cash and not info.robuxOnly and not seen[key] then
+				seen[key] = true
+				keys[#keys + 1] = key
+			end
+		end
+	end
+	for _, key in ipairs(keys) do
 		local info = shop and shop[key]
-		if info and info.cash and not info.robuxOnly and not toolOwned(key) and cash() >= info.cash then
-			if os.clock() - lastToolBuy < 1.2 then
+		local price = info and info.cash
+		if (not info or (price and not info.robuxOnly)) and not toolOwned(key) and (not price or canAfford(price)) then
+			if os.clock() - lastToolBuy < 1.1 then
 				return false
 			end
 			lastToolBuy = os.clock()
+			local stand = toolStand(key)
+			if stand then
+				tpTo(stand:IsA("BasePart") and stand.Position or stand:GetPivot().Position)
+				task.wait(0.12)
+			end
 			BuyToolCash:FireServer(key)
-			print("[HandCollect] tool", key, info.cash)
+			print("[HandCollect] tool", key, price, "cash", cash())
 			return true
 		end
 	end
@@ -1102,7 +1228,7 @@ local function trySwish()
 	return true
 end
 
-local function tryQuest()
+function tryQuest()
 	local i, q, have = currentQuest()
 	if not q then
 		return nil
