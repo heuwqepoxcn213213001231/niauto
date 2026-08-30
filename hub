@@ -1,0 +1,896 @@
+-- Nia Hub — Fall Harvest
+if getgenv()._NiaHubRunning then return end
+getgenv()._NiaHubRunning = true
+getgenv().HandCollectHub = true
+if getgenv().KeepNiaHub == nil then
+ getgenv().KeepNiaHub = true
+end
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RS = game:GetService("ReplicatedStorage")
+
+local PLACE = {
+ Lobby = 92637789841354,
+ Mansion = 100068273119174,
+}
+
+local MAP_LABEL = {
+ Lobby = "Main Lobby",
+ House = "House · Map 1",
+ Mansion = "Mansion · Map 2",
+ GasStation = "Gas Station",
+ Farm = "Farm",
+}
+
+local function detectMap()
+ local id = game.PlaceId
+ if id == PLACE.Lobby then return "Lobby" end
+ if id == PLACE.Mansion then return "Mansion" end
+ local am = workspace:GetAttribute("ActiveMap")
+ if type(am) == "string" and am ~= "" then return am end
+ local loc = workspace:FindFirstChild("Map")
+ loc = loc and loc:FindFirstChild("Leave_Locations")
+ if loc then
+  if loc:FindFirstChild("Basement") or loc:FindFirstChild("Garage") then return "House" end
+  if loc:FindFirstChild("Tennis Court") or loc:FindFirstChild("[F] Left Alley") then return "Mansion" end
+  if loc:FindFirstChild("Staff Room") then return "GasStation" end
+  return "Farm"
+ end
+ if workspace:FindFirstChild("Teams") and workspace.Teams:FindFirstChild("Square1") then
+  return "Lobby"
+ end
+ return "Lobby"
+end
+
+local MAP_NAME = detectMap()
+local IS_LOBBY = MAP_NAME == "Lobby"
+getgenv().FallPlace = MAP_NAME
+getgenv().NiaFarmPrefs = getgenv().NiaFarmPrefs or {
+ map = "House",
+ difficulty = 1,
+ maxPlayers = 1,
+ friendsOnly = false,
+}
+
+local CONFIG = {
+ SourceUrl = "https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/NiaUI",
+ FarmUrl = "https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/Leaves",
+ HubUrl = "https://raw.githubusercontent.com/heuwqepoxcn213213001231/niauto/refs/heads/main/hub",
+ FeedbackWebhook = "",
+ CloudBaseUrl = "",
+ CommunityUrl = "https://discord.gg/niauto",
+}
+
+local queueteleport = (typeof(queue_on_teleport) == "function" and queue_on_teleport)
+ or (syn and syn.queue_on_teleport)
+ or (fluxus and fluxus.queue_on_teleport)
+ or (typeof(queueonteleport) == "function" and queueonteleport)
+ or nil
+
+local queued = false
+if queueteleport then
+ LocalPlayer.OnTeleport:Connect(function()
+  if getgenv().KeepNiaHub == false or queued then
+   return
+  end
+  queued = true
+  local prefs = getgenv().NiaFarmPrefs or {}
+  local boot = string.format(
+   "getgenv().HandCollectHub=true;getgenv().KeepNiaHub=true;getgenv().NiaAutoFarm=%s;getgenv().NiaFarmPrefs={map=%q,difficulty=%d,maxPlayers=%d,friendsOnly=%s};",
+   tostring(getgenv().NiaAutoFarm == true),
+   tostring(prefs.map or "House"),
+   tonumber(prefs.difficulty) or 1,
+   tonumber(prefs.maxPlayers) or 1,
+   tostring(prefs.friendsOnly == true)
+  )
+  queueteleport(boot .. "loadstring(game:HttpGet('" .. CONFIG.HubUrl .. "'))()")
+ end)
+end
+
+local function readFirst(paths)
+ if not (isfile and readfile) then return nil end
+ for _, path in ipairs(paths) do
+ if isfile(path) then
+ return readfile(path)
+ end
+ end
+ return nil
+end
+
+local src = readFirst({ "NiaUISilent/src.lua", "src.lua" })
+if not src then
+ src = game:HttpGet(CONFIG.SourceUrl)
+end
+local NiaHub = loadstring(src)()
+NiaHub:PreloadIcons({ "Lucide", "Material", "Phosphor", "SF" })
+NiaHub:SetScaleRange(0.75, 1.35)
+
+local function httpGet(url)
+ local ok, body = pcall(function()
+  return game:HttpGet(url)
+ end)
+ if ok and type(body) == "string" and #body > 80 and not body:lower():find("<html", 1, true) then
+  return body
+ end
+ local req = (syn and syn.request) or http_request or request
+ if type(req) == "function" then
+  local ok2, res = pcall(req, { Url = url, Method = "GET" })
+  if ok2 and type(res) == "table" and type(res.Body) == "string" and #res.Body > 80 then
+   if not res.Body:lower():find("<html", 1, true) then
+    return res.Body
+   end
+  end
+ end
+ return nil, tostring(body)
+end
+
+local function runLua(src, name)
+ if type(src) ~= "string" then
+  return false, "empty source"
+ end
+ src = src:gsub("^\239\187\191", ""):gsub("^%s+", "")
+ local compiler = loadstring or load
+ if type(compiler) ~= "function" then
+  return false, "no loadstring"
+ end
+ local fn, compileErr = compiler(src, name or "@farm")
+ if type(fn) ~= "function" then
+  return false, tostring(compileErr or "compile failed")
+ end
+ local ok, err = pcall(fn)
+ if not ok then
+  return false, tostring(err)
+ end
+ return true
+end
+
+local function loadFarm()
+ if type(getgenv().StartHandCollect) == "function" then
+  return true
+ end
+ local farm, getErr = httpGet(CONFIG.FarmUrl .. "?t=" .. tostring(os.time()))
+ if not farm then
+  farm, getErr = httpGet(CONFIG.FarmUrl)
+ end
+ if not farm then
+  warn("[Nia Hub] farm HttpGet", getErr)
+  return false, "HttpGet FarmUrl failed"
+ end
+ farm = farm:gsub("function%s+getgenv%s*%(%s*%)%s*%.([%w_]+)%s*%(", "getgenv().%1 = function(")
+ local ok, err = runLua(farm, "@Leaves")
+ if not ok then
+  warn("[Nia Hub] farm", err)
+  return false, tostring(err)
+ end
+ if type(getgenv().StartHandCollect) ~= "function" then
+  return false, "FarmUrl loaded but StartHandCollect missing"
+ end
+ return true
+end
+
+if not IS_LOBBY then
+ loadFarm()
+end
+
+local TOGGLE_KEY = Enum.KeyCode.RightShift
+local Tabs = {}
+
+local Window = NiaHub:CreateWindow({
+ Title = "Nia Hub",
+ Subtitle = MAP_LABEL[MAP_NAME] or MAP_NAME,
+ Icon = "Lucide:leaf",
+ Size = UDim2.fromOffset(640, 455),
+ MinSize = Vector2.new(500, 360),
+ Draggable = true,
+ Resizable = true,
+ UseBlur = true,
+ DefaultTab = "Home",
+ Credits = false,
+ NotifyKeybind = false,
+})
+
+NiaHub:Notify({
+ Title = "Nia Hub",
+ Text = (MAP_LABEL[MAP_NAME] or MAP_NAME) .. " · RightShift to hide.",
+ Type = "success",
+ Duration = 4,
+})
+
+-- ==================== HOME ====================
+
+Tabs.Home = Window:AddTab({ Name = "Home", Icon = "Lucide:layout-dashboard" })
+
+local Details = Tabs.Home:AddSubTab({ Name = "Details And Info", Icon = "Lucide:layout-grid" })
+
+local function greeting()
+ local hour = tonumber(os.date("%H"))
+ if hour < 5 then return "Burning the midnight oil, huh?" end
+ if hour < 12 then return "Good morning." end
+ if hour < 18 then return "Good afternoon." end
+ return "Good evening."
+end
+
+Details:AddCard({
+ UserId = LocalPlayer.UserId,
+ Title = "Hello, " .. LocalPlayer.DisplayName,
+ Description = greeting(),
+})
+
+Details:AddSystemInfoGrid({
+ Description = "Live session and client info",
+})
+
+local statusGrid = Details:AddInfoGrid({
+ Title = "Status",
+ Description = IS_LOBBY and "Lobby — pick map / difficulty / party" or "Bag, quest, leftover leaves, zones left",
+ Color = Color3.fromRGB(88, 140, 255),
+ Columns = 2,
+ Items = {
+  { Label = "Place", Value = MAP_LABEL[MAP_NAME] or MAP_NAME },
+  { Label = "Bag", Value = IS_LOBBY and "—" or "0 / 25" },
+  { Label = "Quest", Value = IS_LOBBY and "—" or "0 / 0" },
+  { Label = "Als", Value = IS_LOBBY and "—" or "0 left" },
+  { Label = "Zones", Value = IS_LOBBY and "—" or "0 left" },
+ },
+})
+
+task.spawn(function()
+ while task.wait(0.5) do
+  if not statusGrid or not statusGrid.Instance or not statusGrid.Instance.Parent then
+   break
+  end
+  if type(getgenv().RefreshHandCollectStatus) == "function" then
+   pcall(getgenv().RefreshHandCollectStatus)
+  end
+  local st = getgenv().HandCollectStatus or {}
+  statusGrid:SetValue("Place", MAP_LABEL[st.map or MAP_NAME] or st.map or MAP_NAME)
+  statusGrid:SetValue("Bag", st.bag or "—")
+  local questText = st.quest or "—"
+  if st.questName and st.questName ~= "—" and st.questName ~= "" then
+   questText = questText .. " · " .. st.questName
+  end
+  statusGrid:SetValue("Quest", questText)
+  statusGrid:SetValue("Als", st.als or "—")
+  statusGrid:SetValue("Zones", st.zones or "—")
+ end
+end)
+
+local ScriptChangelog = Tabs.Home:AddSubTab({ Name = "Script Changelog", Icon = "Lucide:file-text" })
+ScriptChangelog:AddChangelogEntry({
+ Version = "Hand Collect 1.2",
+ Date = "Current",
+ Changes = {
+  { Type = "Added", Text = "Place detect: lobby / House (map 1) / Mansion (map 2)" },
+  { Type = "Added", Text = "Mansion zone order + MapConfig prereq (alleys, courts, statues)" },
+  { Type = "Added", Text = "Lobby Farm tab: map, difficulty, party size, start run" },
+ },
+})
+ScriptChangelog:AddChangelogEntry({
+ Version = "Hand Collect 1.1",
+ Date = "Previous",
+ Changes = {
+  { Type = "Added", Text = "Auto Hand Collect loop with bag sell at dumpster" },
+  { Type = "Added", Text = "Bag / hand / tool / vent buys from quest + cash" },
+  { Type = "Added", Text = "Zone door, garage, leftover clear, finish-game" },
+  { Type = "Added", Text = "Basketball swish quest + journal open" },
+ },
+})
+ScriptChangelog:AddChangelogEntry({
+ Version = "Hand Collect 1.0",
+ Date = "Initial",
+ Changes = {
+  { Type = "Added", Text = "Leaf grab by zone order (Frontyard → Basement)" },
+  { Type = "Added", Text = "Teleport to open leaves when grab misses" },
+  { Type = "Changed", Text = "Hub-gated start: no auto-run when HandCollectHub is set" },
+ },
+})
+
+-- ==================== FARM ====================
+
+Tabs.Farm = Window:AddTab({ Name = "Farm", Icon = "Lucide:leaf" })
+local FarmMain = Tabs.Farm:AddSubTab({
+ Name = IS_LOBBY and "Start Run" or "Hand Collect",
+ Icon = IS_LOBBY and "Lucide:map" or "Lucide:hand",
+})
+
+local DIFF_OPTS = { "Easy", "Medium", "Hard", "Impossible" }
+local MAP_OPTS = { "House", "Mansion" }
+
+local function teamAction(...)
+ local rem = RS:FindFirstChild("Remotes")
+ rem = rem and rem:FindFirstChild("TeamAction")
+ if not rem then
+  rem = RS:FindFirstChild("TeamAction")
+ end
+ if not rem then
+  return false
+ end
+ rem:FireServer(...)
+ return true
+end
+
+local function sitSquare()
+ local teams = workspace:FindFirstChild("Teams")
+ if not teams then
+  return false
+ end
+ local char = LocalPlayer.Character
+ local root = char and char:FindFirstChild("HumanoidRootPart")
+ if not root then
+  return false
+ end
+ for i = 1, 4 do
+  local sq = teams:FindFirstChild("Square" .. i)
+  if sq then
+   local part = sq.PrimaryPart or sq:FindFirstChildWhichIsA("BasePart", true)
+   if part then
+    root.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
+    return true
+   end
+  end
+ end
+ return false
+end
+
+local function setFarm(on)
+ if IS_LOBBY then
+  getgenv().NiaAutoFarm = on and true or false
+  NiaHub:Notify({
+   Title = "Farm",
+   Text = on and "Auto farm after teleport ON" or "Auto farm after teleport OFF",
+   Type = on and "success" or "info",
+   Duration = 3,
+  })
+  return
+ end
+ if on then
+  local ok, why = loadFarm()
+  if not ok then
+   NiaHub:Notify({ Title = "Farm", Text = why or "FarmUrl failed", Type = "warning", Duration = 4 })
+   return
+  end
+  getgenv().NiaAutoFarm = true
+  getgenv().StartHandCollect()
+  NiaHub:Notify({ Title = "Farm", Text = "Hand collect ON · " .. (MAP_LABEL[MAP_NAME] or MAP_NAME), Type = "success", Duration = 3 })
+ else
+  getgenv().NiaAutoFarm = false
+  if type(getgenv().StopHandCollectRun) == "function" then
+   getgenv().StopHandCollectRun()
+  else
+   getgenv().StopHandCollect = true
+  end
+  NiaHub:Notify({ Title = "Farm", Text = "Hand collect OFF", Type = "info", Duration = 3 })
+ end
+end
+
+if IS_LOBBY then
+ local prefs = getgenv().NiaFarmPrefs
+ FarmMain:AddParagraph({
+  Title = "Main Lobby",
+  Icon = "Lucide:map-pin",
+  Text = "Place " .. tostring(game.PlaceId) .. "\nPlayers here: " .. tostring(#Players:GetPlayers()) .. "\nSit a pad, set map / difficulty / party, then Start Run.",
+ })
+ FarmMain:AddDropdown({
+  Text = "Map",
+  Description = "House = map 1 · Mansion = map 2",
+  Icon = "Lucide:map",
+  Flag = "farmMap",
+  Options = MAP_OPTS,
+  Default = prefs.map == "Mansion" and "Mansion" or "House",
+  Callback = function(value)
+   getgenv().NiaFarmPrefs.map = value
+   teamAction("setMap", value)
+  end,
+ })
+ FarmMain:AddDropdown({
+  Text = "Difficulty",
+  Description = "Easy 90m · Medium 60m · Hard 30m · Impossible 20m",
+  Icon = "Lucide:gauge",
+  Flag = "farmDifficulty",
+  Options = DIFF_OPTS,
+  Default = DIFF_OPTS[math.clamp(tonumber(prefs.difficulty) or 1, 1, 4)],
+  Callback = function(value)
+   local idx = 1
+   for i, name in ipairs(DIFF_OPTS) do
+    if name == value then idx = i break end
+   end
+   getgenv().NiaFarmPrefs.difficulty = idx
+   teamAction("setDifficulty", idx)
+  end,
+ })
+ FarmMain:AddSlider({
+  Text = "Party Size",
+  Description = "Max players on this pad (1–4)",
+  Icon = "Lucide:users",
+  Flag = "farmParty",
+  Min = 1, Max = 4, Default = math.clamp(tonumber(prefs.maxPlayers) or 1, 1, 4), Increment = 1,
+  Callback = function(value)
+   getgenv().NiaFarmPrefs.maxPlayers = value
+   teamAction("setMax", value)
+  end,
+ })
+ FarmMain:AddToggle({
+  Text = "Friends Only",
+  Description = "Lock pad to friends",
+  Icon = "Lucide:lock",
+  Flag = "farmFriends",
+  Default = prefs.friendsOnly == true,
+  Callback = function(value)
+   getgenv().NiaFarmPrefs.friendsOnly = value and true or false
+   teamAction("setFriendsOnly", value and true or false)
+  end,
+ })
+ FarmMain:AddToggle({
+  Text = "Auto Farm After Join",
+  Description = "Start hand collect when you land on the farm place",
+  Icon = "Lucide:play",
+  Flag = "autoHandCollect",
+  Default = getgenv().NiaAutoFarm == true,
+  Callback = setFarm,
+ })
+ FarmMain:AddButton({
+  Text = "Start Run",
+  Description = "Sit pad → apply settings → confirm teleport",
+  Icon = "Lucide:rocket",
+  Callback = function()
+   local prefs = getgenv().NiaFarmPrefs
+   sitSquare()
+   task.wait(0.35)
+   local ok = teamAction("setMap", prefs.map or "House")
+   teamAction("setDifficulty", tonumber(prefs.difficulty) or 1)
+   teamAction("setMax", tonumber(prefs.maxPlayers) or 1)
+   teamAction("setFriendsOnly", prefs.friendsOnly == true)
+   task.wait(0.15)
+   if not teamAction("confirm") or not ok then
+    NiaHub:Notify({
+     Title = "Start Run",
+     Text = ok and "confirm sent" or "TeamAction missing — stand on a pad and use the game UI",
+     Type = ok and "info" or "warning",
+     Duration = 4,
+    })
+    return
+   end
+   NiaHub:Notify({
+    Title = "Start Run",
+    Text = (prefs.map or "House") .. " · " .. (DIFF_OPTS[prefs.difficulty] or "Easy") .. " · " .. tostring(prefs.maxPlayers or 1) .. "p",
+    Type = "success",
+    Duration = 3,
+   })
+  end,
+ })
+else
+ FarmMain:AddParagraph({
+  Title = MAP_LABEL[MAP_NAME] or MAP_NAME,
+  Icon = "Lucide:leaf",
+  Text = "Place " .. tostring(game.PlaceId) .. " · " .. MAP_NAME,
+ })
+ FarmMain:AddToggle({
+  Text = "Auto Hand Collect",
+  Description = MAP_NAME == "Mansion"
+   and "Clear Mansion: alleys, courts, backyard, statues"
+   or "Grab leaves, sell, buy upgrades, clear zones",
+  Icon = "Lucide:hand",
+  Flag = "autoHandCollect",
+  Default = getgenv().NiaAutoFarm == true,
+  Callback = setFarm,
+ })
+ if getgenv().NiaAutoFarm == true then
+  task.defer(function()
+   setFarm(true)
+  end)
+ end
+end
+
+-- ==================== GENERAL ====================
+
+Tabs.General = Window:AddTab({ Name = "General", Icon = "Lucide:house" })
+
+local Profile = Tabs.General:AddSubTab({ Name = "Profile", Icon = "Material:person" })
+Profile:AddCard({
+ UserId = LocalPlayer.UserId,
+ Title = "My Profile",
+ Description = "Click to view your information",
+ Callback = function()
+  NiaHub:Notify({
+   Title = "Profile",
+   Text = "Name: " .. LocalPlayer.Name,
+   Type = "info",
+   Duration = 3,
+  })
+ end,
+})
+Profile:AddDivider()
+Profile:AddButton({
+ Text = "Show User ID",
+ Description = "Displays your User ID",
+ Icon = "Material:badge",
+ Callback = function()
+  NiaHub:Notify({
+   Title = "User ID",
+   Text = tostring(LocalPlayer.UserId),
+   Type = "info",
+   Duration = 3,
+  })
+ end,
+})
+
+local Actions = Tabs.General:AddSubTab({ Name = "Actions", Icon = "Phosphor:lightning" })
+Actions:AddSection("Config", "Phosphor:floppy-disk")
+
+Actions:AddButton({
+ Text = "Save Settings",
+ Description = "Saves every setting marked with a Flag",
+ Icon = "Phosphor:floppy-disk",
+ Callback = function()
+  local saved, err = NiaHub:SaveConfig("fall-harvest", {
+   Description = "Nia Hub Fall Harvest",
+   Tags = { "farm", "hand-collect" },
+  })
+  NiaHub:Notify({
+   Title = saved and "Saved" or "Could not save",
+   Text = saved and "Settings written to NiaHub/Configs/fall-harvest.json" or tostring(err),
+   Type = saved and "success" or "error",
+   Duration = 3,
+  })
+ end,
+})
+
+Actions:AddButton({
+ Text = "Load Settings",
+ Description = "Restores whatever was last saved",
+ Icon = "Phosphor:folder-open",
+ Callback = function()
+  local loaded, err = NiaHub:LoadConfig("fall-harvest", true)
+  NiaHub:Notify({
+   Title = loaded and "Loaded" or "Nothing to load",
+   Text = loaded and "Settings restored" or tostring(err),
+   Type = loaded and "success" or "warning",
+   Duration = 3,
+  })
+ end,
+})
+
+Actions:AddButton({
+ Text = "List Saved Configs",
+ Description = "Shows every local profile",
+ Icon = "Lucide:list-tree",
+ Callback = function()
+  local configs, err = NiaHub:ListConfigs()
+  if err then
+   NiaHub:Notify({ Title = "Configs", Text = tostring(err), Type = "warning", Duration = 4 })
+   return
+  end
+  local names = {}
+  for _, config in ipairs(configs) do table.insert(names, config.Name) end
+  NiaHub:Notify({
+   Title = "Saved Configs",
+   Text = #names > 0 and table.concat(names, ", ") or "No saved configs yet.",
+   Type = "info",
+   Duration = 4,
+  })
+ end,
+})
+
+Actions:AddDivider()
+local stats = Actions:AddParagraph({
+ Title = "Statistics",
+ Icon = "Phosphor:chart-bar",
+ Text = "Players online: " .. #Players:GetPlayers(),
+})
+
+task.spawn(function()
+ while task.wait(1) do
+  if not stats or not stats.Instance or not stats.Instance.Parent then
+   break
+  end
+  local st = getgenv().HandCollectStatus or {}
+  local cap = st.cap == math.huge and "inf" or tostring(st.cap or 25)
+  stats:Set(
+   "Players online: " .. #Players:GetPlayers()
+    .. "\nFarm: " .. (st.running and "On" or "Off")
+    .. "\nLeaves: " .. tostring(st.leaves or 0) .. " / " .. cap
+    .. "\nCash: " .. tostring(st.cash or 0)
+    .. "\nZone: " .. tostring(st.zone or "—")
+  )
+ end
+end)
+
+-- ==================== SETTINGS ====================
+
+local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
+
+local audio = {
+ sfxOn = true,
+ master = 0.8,
+ music = 0.7,
+ sfx = 0.85,
+}
+
+local function isMusicSound(sound)
+ local n = string.lower(sound.Name)
+ if sound.Looped then return true end
+ return n:find("music", 1, true)
+  or n:find("bgm", 1, true)
+  or n:find("theme", 1, true)
+  or n:find("soundtrack", 1, true)
+  or n:find("ambient", 1, true)
+end
+
+local function applySound(sound)
+ if not sound:IsA("Sound") then return end
+ if sound:GetAttribute("NiaVol") == nil then
+  sound:SetAttribute("NiaVol", sound.Volume)
+ end
+ local base = sound:GetAttribute("NiaVol")
+ if not audio.sfxOn then
+  sound.Volume = 0
+  return
+ end
+ local bus = isMusicSound(sound) and audio.music or audio.sfx
+ sound.Volume = math.clamp(base * audio.master * bus, 0, 2)
+end
+
+local function scanSounds(root)
+ if not root then return end
+ for _, inst in ipairs(root:GetDescendants()) do
+  if inst:IsA("Sound") then applySound(inst) end
+ end
+end
+
+local function applyAllSounds()
+ pcall(function()
+  SoundService.Volume = audio.sfxOn and audio.master or 0
+ end)
+ pcall(function()
+  local ugs = UserSettings():GetService("UserGameSettings")
+  if ugs.MasterVolume ~= nil then
+   ugs.MasterVolume = audio.sfxOn and audio.master or 0
+  end
+ end)
+ scanSounds(workspace)
+ scanSounds(SoundService)
+ scanSounds(LocalPlayer:FindFirstChild("PlayerGui"))
+end
+
+workspace.DescendantAdded:Connect(function(inst)
+ if inst:IsA("Sound") then task.defer(applySound, inst) end
+end)
+
+local function paintUi()
+ local T = NiaHub.Theme
+ local gui = Window._gui
+ if not gui then return end
+ gui.BackgroundColor3 = T.Background
+ for _, inst in ipairs(gui:GetDescendants()) do
+  if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+   if inst.TextTransparency < 1 then
+    local small = (inst.TextSize or 14) <= 12
+    inst.TextColor3 = small and T.TextDim or T.Text
+   end
+   if inst:IsA("TextBox") then
+    inst.PlaceholderColor3 = T.TextDim
+   end
+  elseif inst:IsA("UIStroke") then
+   inst.Color = T.Accent
+  elseif inst.Name == "Window" and inst:IsA("Frame") then
+   inst.BackgroundColor3 = T.Background
+  elseif inst.Name == "Indicator" and inst:IsA("Frame") then
+   inst.BackgroundColor3 = T.Accent
+  end
+ end
+end
+
+local function applyDark(on)
+ local T = NiaHub.Theme
+ if on then
+  T.Background = Color3.fromRGB(16, 16, 16)
+  T.Surface = Color3.fromRGB(24, 24, 24)
+  T.Text = Color3.fromRGB(240, 240, 240)
+  T.TextDim = Color3.fromRGB(150, 150, 155)
+ else
+  T.Background = Color3.fromRGB(236, 236, 240)
+  T.Surface = Color3.fromRGB(255, 255, 255)
+  T.Text = Color3.fromRGB(22, 22, 24)
+  T.TextDim = Color3.fromRGB(100, 100, 108)
+ end
+ paintUi()
+end
+
+local function applyPrimary(color)
+ NiaHub.Theme.Accent = color
+ paintUi()
+end
+
+local function applySecondary(color)
+ NiaHub.Theme.Surface = color
+ local gui = Window._gui
+ if not gui then return end
+ for _, inst in ipairs(gui:GetDescendants()) do
+  if inst:IsA("Frame") and (inst.Name == "Notification" or inst.Name == "Card" or inst.BackgroundTransparency > 0.8) then
+   if inst.BackgroundTransparency < 1 and inst.Name ~= "Window" and inst.Name ~= "Glass" then
+    inst.BackgroundColor3 = color
+   end
+  end
+ end
+end
+
+local function applyRenderDistance(studs)
+ Lighting.FogEnd = studs
+ Lighting.FogStart = math.max(studs * 0.55, 10)
+end
+
+local function applyFps(n)
+ pcall(function()
+  if setfpscap then setfpscap(n) end
+ end)
+end
+
+Tabs.Settings = Window:AddTab({ Name = "Settings", Icon = "SF:gear" })
+
+local GeneralSettings = Tabs.Settings:AddSubTab({ Name = "General", Icon = "SF:slider.horizontal.3" })
+GeneralSettings:AddSection("General Settings")
+
+GeneralSettings:AddToggle({
+ Text = "Dark Mode",
+ Description = "Dark / light panel colors",
+ Icon = "SF:moon",
+ Flag = "darkMode",
+ Default = true,
+ Callback = applyDark,
+})
+
+GeneralSettings:AddToggle({
+ Text = "Background Blur",
+ Description = "Blurs the world while the panel is open",
+ Icon = "SF:drop",
+ Flag = "blur",
+ Default = true,
+ Callback = function(value) NiaHub:SetBlurEnabled(value) end,
+})
+
+GeneralSettings:AddToggle({
+ Text = "Sound Effects",
+ Description = "Mute / unmute game audio",
+ Icon = "SF:speaker.wave.2",
+ Flag = "sfx",
+ Default = true,
+ Callback = function(value)
+  audio.sfxOn = value and true or false
+  applyAllSounds()
+ end,
+})
+
+GeneralSettings:AddToggle({
+ Text = "Keep Hub",
+ Description = queueteleport
+  and "Re-execute hub after rejoin / teleport"
+  or "Executor missing queue_on_teleport",
+ Icon = "Lucide:refresh-cw",
+ Flag = "keepHub",
+ Default = true,
+ Callback = function(value)
+  getgenv().KeepNiaHub = value and true or false
+ end,
+})
+
+GeneralSettings:AddDivider()
+GeneralSettings:AddSection("Performance")
+
+GeneralSettings:AddSlider({
+ Text = "Render Distance",
+ Description = "Fog start/end in studs",
+ Icon = "SF:eye",
+ Flag = "renderDistance",
+ Min = 50, Max = 500, Default = 250, Increment = 25,
+ Suffix = " studs",
+ Callback = applyRenderDistance,
+})
+
+GeneralSettings:AddSlider({
+ Text = "Max FPS",
+ Description = "setfpscap if the executor supports it",
+ Icon = "SF:gauge",
+ Flag = "maxFps",
+ Min = 30, Max = 240, Default = 60, Increment = 5,
+ Callback = applyFps,
+})
+
+local Audio = Tabs.Settings:AddSubTab({ Name = "Audio", Icon = "Material:volume_up" })
+Audio:AddSection("Audio Controls", "Material:tune")
+
+Audio:AddSlider({
+ Text = "Master Volume", Description = "Overall volume", Icon = "Material:volume_up",
+ Flag = "volMaster", Min = 0, Max = 100, Default = 80, Increment = 5, Suffix = "%",
+ Callback = function(value)
+  audio.master = value / 100
+  applyAllSounds()
+ end,
+})
+Audio:AddSlider({
+ Text = "Music Volume", Description = "Looped / music-named sounds", Icon = "Material:music_note",
+ Flag = "volMusic", Min = 0, Max = 100, Default = 70, Increment = 5, Suffix = "%",
+ Callback = function(value)
+  audio.music = value / 100
+  applyAllSounds()
+ end,
+})
+Audio:AddSlider({
+ Text = "SFX Volume", Description = "Other sounds", Icon = "Material:audiotrack",
+ Flag = "volSfx", Min = 0, Max = 100, Default = 85, Increment = 5, Suffix = "%",
+ Callback = function(value)
+  audio.sfx = value / 100
+  applyAllSounds()
+ end,
+})
+
+local Customization = Tabs.Settings:AddSubTab({ Name = "Customization", Icon = "Phosphor:paint-brush" })
+Customization:AddSection("Colors", "Phosphor:palette")
+
+Customization:AddColorPicker({
+ Text = "Primary Color",
+ Description = "Accent / strokes / tab indicator",
+ Icon = "Phosphor:palette",
+ Flag = "primaryColor",
+ Default = Color3.fromRGB(255, 90, 90),
+ Callback = applyPrimary,
+})
+
+Customization:AddColorPicker({
+ Text = "Secondary Color",
+ Description = "Card / surface tint",
+ Icon = "Phosphor:swatches",
+ Flag = "secondaryColor",
+ Default = Color3.fromRGB(90, 90, 255),
+ Callback = applySecondary,
+})
+
+Customization:AddDivider()
+Customization:AddSection("Keybinds", "Phosphor:keyboard")
+
+Customization:AddKeybind({
+ Text = "Open Menu",
+ Description = "Key that opens and closes the panel",
+ Icon = "Phosphor:keyboard",
+ Flag = "toggleKey",
+ Default = TOGGLE_KEY,
+ Callback = function(key, kind)
+  if kind == "press" then
+   Window:Toggle()
+  end
+ end,
+})
+
+Customization:AddKeybind({
+ Text = "Screenshot",
+ Description = "Key that takes a screenshot",
+ Icon = "Phosphor:camera",
+ Flag = "screenshotKey",
+ Default = Enum.KeyCode.F12,
+ Callback = function(key, kind) print("Screenshot key:", key and key.Name, kind) end,
+})
+
+-- ==================== ABOUT ====================
+
+Tabs.About = Window:AddTab({ Name = "About", Icon = "Phosphor:info" })
+
+Tabs.About:AddParagraph({
+ Title = "Nia Hub",
+ Icon = "SF:info.circle",
+ Text = "Nia Hub — Fall Harvest.\n\nDiscord: " .. CONFIG.CommunityUrl,
+})
+Tabs.About:AddDivider()
+Tabs.About:AddSection("Support", "Lucide:message-circle")
+Tabs.About:AddCard({
+ Image = "Phosphor:discord-logo",
+ Title = "Nia Hub Discord",
+ Description = CONFIG.CommunityUrl,
+ ButtonText = "Copy Discord invite",
+ ButtonCallback = function()
+  NiaHub:OpenDiscord()
+ end,
+})
+
+Window:SelectTab("Home")
+Window:Open()
